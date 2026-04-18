@@ -79,7 +79,7 @@ export default function Palette({ language, framework }: any) {
       {/* ADD CUSTOM SERVICE */}
       <div className="paletteAddBox">
         <input
-          className="paletteInput"
+          className="input"
           placeholder="Service name"
           value={newItem.label}
           onChange={(e) =>
@@ -88,7 +88,7 @@ export default function Palette({ language, framework }: any) {
         />
 
         <input
-          className="paletteInput"
+          className="input"
           placeholder="Description"
           value={newItem.desc}
           onChange={(e) =>
