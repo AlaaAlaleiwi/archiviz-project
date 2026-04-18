@@ -7,16 +7,22 @@ interface Props {
   graph: Graph;
   camera: any;
   selectedIds: string[];
+  selectedEdgeId: string | null;
   wire: any;
   onDrop: any;
   onDragOver: any;
   onNodePointerDown: any;
+  onEdgePointerDown: (e: React.PointerEvent<SVGPathElement>, edgeId: string) => void;
   onCanvasPointerDown: (e: React.PointerEvent<HTMLDivElement>) => void;
+  onCanvasWheel: (e: React.WheelEvent<HTMLDivElement>) => void;
   onDelete: any;
   onRename: any;
   startWire: any;
   moveWire: (clientX: number, clientY: number) => void;
-  endWire: any;
+  onZoomIn: () => void;
+  onZoomOut: () => void;
+  onResetCamera: () => void;
+  onClearCanvas: () => void;
 }
 
 // Node dimensions — must match CSS
@@ -59,16 +65,22 @@ export default function Canvas({
   graph,
   camera,
   selectedIds,
+  selectedEdgeId,
   wire,
   onDrop,
   onDragOver,
   onNodePointerDown,
+  onEdgePointerDown,
   onCanvasPointerDown,
+  onCanvasWheel,
   onDelete,
   onRename,
   startWire,
   moveWire,
-  endWire
+  onZoomIn,
+  onZoomOut,
+  onResetCamera,
+  onClearCanvas,
 }: Props) {
   return (
     <div
@@ -76,18 +88,45 @@ export default function Canvas({
       className="canvas"
       onDrop={onDrop}
       onDragOver={onDragOver}
+      onWheel={onCanvasWheel}
       onPointerMove={(e) => moveWire(e.clientX, e.clientY)}
       onPointerUp={() => { /* wire cancelled by onCanvasPointerDown or port pointerUp */ }}
       onPointerDown={onCanvasPointerDown}
     >
+      <div className="canvasHud" onPointerDown={(e) => e.stopPropagation()}>
+        <div className="cameraBadge">
+          Zoom {Math.round(camera.scale * 100)}%
+        </div>
+
+        <div className="cameraControls">
+          <button type="button" className="cameraButton" onClick={onZoomOut}>
+            -
+          </button>
+          <button type="button" className="cameraButton" onClick={onZoomIn}>
+            +
+          </button>
+          <button type="button" className="cameraButton reset" onClick={onResetCamera}>
+            Reset
+          </button>
+          <button type="button" className="cameraButton clear" onClick={onClearCanvas}>
+            Clear
+          </button>
+        </div>
+      </div>
+
+      <div
+        className="grid"
+        style={{
+          transform: `translate(${camera.x}px,${camera.y}px) scale(${camera.scale})`
+        }}
+      />
+
       <div
         className="world"
         style={{
           transform: `translate(${camera.x}px,${camera.y}px) scale(${camera.scale})`
         }}
       >
-        <div className="grid" />
-
         <svg className="edges">
           <defs>
             <marker
@@ -117,8 +156,9 @@ export default function Canvas({
               <path
                 key={e.id}
                 d={d}
-                className="edge animated-edge"
+                className={`edge animated-edge ${selectedEdgeId === e.id ? "selected" : ""}`}
                 markerEnd="url(#arrow)"
+                onPointerDown={(event) => onEdgePointerDown(event, e.id)}
               />
             );
           })}
@@ -146,7 +186,6 @@ export default function Canvas({
             onDelete={onDelete}
             onRename={onRename}
             onStartWire={startWire}
-            onEndWire={endWire}
           />
         ))}
       </div>

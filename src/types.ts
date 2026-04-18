@@ -1,26 +1,40 @@
-export type NodeType = "api" | "db" | "database" | "queue" | "auth";
+export type NodeType = string;
 
-export interface NodeData {
+export type NodeData = {
+
   id: string;
+
   type: NodeType;
-  name: string;
-  x: number;
-  y: number;
-}
 
-export interface Edge {
+  name: string;
+
+  x: number;
+
+  y: number;
+
+};
+
+export type Edge = {
+
   id: string;
+
   from: string;
+
   to: string;
 
   fromSide: "top" | "right" | "bottom" | "left";
-  toSide: "top" | "right" | "bottom" | "left";
-}
 
-export interface Graph {
+  toSide: "top" | "right" | "bottom" | "left";
+
+};
+
+export type Graph = {
+
   nodes: NodeData[];
+
   edges: Edge[];
-}
+
+};
 
 export type Camera = {
 
@@ -31,3 +45,4 @@ export type Camera = {
   scale: number;
 
 };
+export type Language = "javascript" | "typescript" | "python" | "java" | "cpp";

@@ -1,73 +1,54 @@
 # =========================
-# DEPENDENCIES
+# Dependencies
 # =========================
 node_modules/
 
 # =========================
-# BUILD OUTPUT
+# Build outputs (Vite)
 # =========================
-build/
 dist/
+build/
+
+# =========================
+# Electron build output
+# =========================
+release/
 out/
-coverage/
+dist-electron/
+electron-dist/
+
+# Mac system files
+.DS_Store
 
 # =========================
-# ENV FILES
-# =========================
-.env
-.env.local
-.env.development
-.env.test
-.env.production
-
-# Keep example env
-!.env.example
-
-# =========================
-# LOGS
+# Logs
 # =========================
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
-pnpm-debug.log*
 
 # =========================
-# OS FILES
+# Environment files
 # =========================
-.DS_Store
-Thumbs.db
+.env
+.env.local
+.env.*.local
 
 # =========================
-# IDE / EDITORS
+# Electron cache / temp
+# =========================
+*.log
+*.sqlite
+*.sqlite3
+
+# =========================
+# Vite / TS cache
+# =========================
+.vite/
+tsconfig.tsbuildinfo
+
+# =========================
+# IDE
 # =========================
 .vscode/
 .idea/
-*.sublime-project
-*.sublime-workspace
-
-# =========================
-# TEST / COVERAGE
-# =========================
-coverage/
-
-# =========================
-# CACHE
-# =========================
-.cache/
-.parcel-cache/
-.eslintcache
-
-# =========================
-# VITE (if using Vite)
-# =========================
-.vite/
-
-# =========================
-# NEXT (ignore if using Next.js inside React repo)
-# =========================
-.next/
-
-# =========================
-# TYPESCRIPT
-# =========================
-*.tsbuildinfo

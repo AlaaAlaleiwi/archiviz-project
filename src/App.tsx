@@ -1,726 +1,714 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useCallback, useMemo, useEffect, type ChangeEvent } from "react";
 import "./styles.css";
+import { saveAs } from "file-saver";
 
 import Palette from "./components/Palette";
 import Canvas from "./components/Canvas";
 import CodePanel from "./components/CodePanel";
 import Topbar from "./components/Topbar";
-
-import type { Graph, NodeData, NodeType, Camera } from "./types";
 import Settings, { type AISettings } from "./components/Settings";
-import JSZip from "jszip";
-import { saveAs } from "file-saver";
+
+import type { Graph, NodeType, Camera, Language, NodeData, Edge } from "./types";
+
+import { AIService } from "./services/AIService";
+import { GraphService } from "./services/GraphService";
+import { ProjectImportService } from "./services/ProjectImportService";
+import { ZipService } from "./services/ZipService";
+
+import {
+  buildAIPrompt,
+  buildNodeImplementationPrompt,
+  getGeneratedFilePath,
+} from "./utils/promptBuilder";
+import { cleanAIResponse } from "./utils/stringUtils";
 
 const genId = () => Math.random().toString(36).slice(2, 10);
-const extensionMap = {
-  javascript: "js",
-  typescript: "ts",
-  python: "py",
-  java: "java",
-  cpp: "cpp"
-};
-type GeneratedFile = {
-  path: string;
-  content: string;
+
+type WireState = {
+  from: string;
+  fromSide: Edge["fromSide"];
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+} | null;
+
+type DragState = {
+  nodeId: string;
+  offsetX: number;
+  offsetY: number;
+} | null;
+
+type PanState = {
+  pointerId: number;
+  startX: number;
+  startY: number;
+  originX: number;
+  originY: number;
+} | null;
+
+const MIN_SCALE = 0.5;
+const MAX_SCALE = 2.4;
+const ZOOM_STEP = 1.14;
+
+const BUILD_TOOLS_BY_LANGUAGE: Record<Language, string[]> = {
+  javascript: ["npm", "pnpm", "yarn"],
+  typescript: ["npm", "pnpm", "yarn"],
+  python: ["pip", "poetry", "uv"],
+  java: ["maven", "gradle"],
+  cpp: ["cmake", "make", "meson"],
 };
 
-type BuildTool = "maven" | "gradle";
-
-const mainFileNameMap = {
-  javascript: "index.js",
-  typescript: "index.ts",
-  python: "main.py",
-  java: "Main.java",
-  cpp: "main.cpp"
-};
-const cleanAIResponse = (text: string) => {
-  return text
-    .replace(/```[a-z]*\n?/gi, "")
-    .replace(/```/g, "")
-    .trim();
-};
-type Language = "javascript" | "typescript" | "python" | "java" | "cpp";
-
-const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
-
-const formatters: Record<Language, { node: (n: NodeData) => string; edge: (e: any) => string }> = {
-  javascript: {
-    node: (n) => `const ${n.id} = create${capitalize(n.type)}();`,
-    edge: (e) => `${e.from}.connect(${e.to});`
-  },
-  typescript: {
-    node: (n) => `const ${n.id}: Node = create${capitalize(n.type)}();`,
-    edge: (e) => `${e.from}.connect(${e.to});`
-  },
-  python: {
-    node: (n) => `${n.id} = create_${n.type}()`,
-    edge: (e) => `${e.from}.connect(${e.to})`
-  },
-  java: {
-    node: (n) => `Node ${n.id} = create${capitalize(n.type)}();`,
-    edge: (e) => `${e.from}.connect(${e.to});`
-  },
-  cpp: {
-    node: (n) => `Node* ${n.id} = create${capitalize(n.type)}();`,
-    edge: (e) => `${e.from}->connect(${e.to});`
-  }
+type SavedProjectFile = {
+  version: 1;
+  savedAt: string;
+  projectName: string;
+  language: Language;
+  framework: string;
+  buildTool: string;
+  prompt: string;
+  graph: Graph;
 };
 
 export default function App() {
-  // ── Persisted state — hydrated from localStorage on first render ─────
-  const [theme, setTheme] = useState<"dark" | "light">(() => {
-    try { return (localStorage.getItem("arch_theme") as "dark" | "light") || "dark"; } catch { return "dark"; }
-  });
-  const [settings, setSettings] = useState<AISettings | null>(() => {
-    try { const s = localStorage.getItem("ai_settings"); return s ? JSON.parse(s) : null; } catch { return null; }
-  });
-  const [language, setLanguage] = useState<Language>(() => {
-    try { return (localStorage.getItem("arch_language") as Language) || "javascript"; } catch { return "javascript"; }
-  });
-  const [graph, setGraph] = useState<Graph>(() => {
-    try { const g = localStorage.getItem("arch_graph"); return g ? JSON.parse(g) : { nodes: [], edges: [] }; } catch { return { nodes: [], edges: [] }; }
-  });
-  const [code, setCode] = useState<string>(() => {
-    try { return localStorage.getItem("arch_code") || ""; } catch { return ""; }
-  });
-  const [buildTool, setBuildTool] = useState<BuildTool>("maven");
+  /* =======================
+     STATE
+  ======================= */
 
-  const BASE_PACKAGE = "com.generated.app";
-  const [projectName, setProjectName] = useState("architecture-app");
+  const [theme, setTheme] = useState<"dark" | "light">("dark");
+  const [settings, setSettings] = useState<AISettings | null>(null);
+
+  const [language, setLanguage] = useState<Language>("javascript");
   const [framework, setFramework] = useState("Spring Boot");
-  const getFolders = () => ({
-    java: "src/main/java/com/generated/app",
-    resources: "src/main/resources"
-  });
 
-  const generatePomXml = () => `<?xml version="1.0" encoding="UTF-8"?>
-<project xmlns="http://maven.apache.org/POM/4.0.0">
-  <modelVersion>4.0.0</modelVersion>
+  const [graph, setGraph] = useState<Graph>({ nodes: [], edges: [] });
 
-  <groupId>com.generated</groupId>
-  <artifactId>architecture-app</artifactId>
-  <version>1.0.0</version>
+  const [prompt, setPrompt] = useState("");
 
-  <parent>
-    <groupId>org.springframework.boot</groupId>
-    <artifactId>spring-boot-starter-parent</artifactId>
-    <version>3.2.0</version>
-  </parent>
-
-  <properties>
-    <java.version>17</java.version>
-  </properties>
-
-  <dependencies>
-    <dependency>
-      <groupId>org.springframework.boot</groupId>
-      <artifactId>spring-boot-starter-web</artifactId>
-    </dependency>
-
-    <dependency>
-      <groupId>org.springframework.boot</groupId>
-      <artifactId>spring-boot-starter-data-jpa</artifactId>
-    </dependency>
-
-    <dependency>
-      <groupId>com.h2database</groupId>
-      <artifactId>h2</artifactId>
-      <scope>runtime</scope>
-    </dependency>
-  </dependencies>
-
-  <build>
-    <plugins>
-      <plugin>
-        <groupId>org.springframework.boot</groupId>
-        <artifactId>spring-boot-maven-plugin</artifactId>
-      </plugin>
-    </plugins>
-  </build>
-</project>`;
-
-  const generateGradle = () => `
-plugins {
-  id 'java'
-  id 'org.springframework.boot' version '3.2.0'
-}
-
-group = 'com.generated'
-version = '1.0.0'
-
-java {
-  toolchain {
-    languageVersion = JavaLanguageVersion.of(17)
-  }
-}
-
-dependencies {
-  implementation 'org.springframework.boot:spring-boot-starter-web'
-  implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
-  runtimeOnly 'com.h2database:h2'
-}
-`;
-
-  const generateMainClass = () => `
-package ${BASE_PACKAGE};
-
-import org.springframework.boot.SpringApplication;
-import org.springframework.boot.autoconfigure.SpringBootApplication;
-
-@SpringBootApplication
-public class Application {
-  public static void main(String[] args) {
-    SpringApplication.run(Application.class, args);
-  }
-}
-`;
-  const ensurePackage = (code: string) => {
-    if (!code.includes(`package ${BASE_PACKAGE}`)) {
-      return `package ${BASE_PACKAGE};\n\n${code}`;
-    }
-    return code;
-  };
-
-  const generateApplicationYml = () => `
-spring:
-  datasource:
-    url: jdbc:h2:mem:testdb
-    driverClassName: org.h2.Driver
-  h2:
-    console:
-      enabled: true
-`;
-  // ── Non-persisted state ────────────────────────────────────────────────
-  const [showSettings, setShowSettings] = useState(false);
+  const [projectName, setProjectName] = useState("architecture-app");
+  const [buildTool, setBuildTool] = useState("npm");
   const [loading, setLoading] = useState(false);
-  const [aiResponse, setAiResponse] = useState("");
+  const [importingProject, setImportingProject] = useState(false);
+
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
+  const [wire, setWire] = useState<WireState>(null);
+  const [drag, setDrag] = useState<DragState>(null);
+  const [pan, setPan] = useState<PanState>(null);
+  const [showSettings, setShowSettings] = useState(false);
 
-  const [camera] = useState<Camera>({ x: 0, y: 0, scale: 1 });
+  const [camera, setCamera] = useState<Camera>({ x: 120, y: 72, scale: 1 });
 
-  // ref to the canvas div — used to convert client → world coordinates
   const canvasRef = useRef<HTMLDivElement>(null);
+  const abortRef = useRef<AbortController | null>(null);
+  const folderInputRef = useRef<HTMLInputElement>(null);
+  const projectFileInputRef = useRef<HTMLInputElement>(null);
 
-  /* ---- coordinate helper ---- */
+  /* =======================
+     SERVICES (STABLE)
+  ======================= */
+
+  const ai = useMemo(() => {
+    return settings ? new AIService(settings) : null;
+  }, [settings]);
+
+  const graphService = useMemo(() => {
+    return new GraphService(graph);
+  }, [graph]);
+
+  const zipService = useMemo(() => new ZipService(), []);
+  const projectImportService = useMemo(() => new ProjectImportService(), []);
+
+  /* =======================
+     UTIL
+  ======================= */
+
   const clientToWorld = useCallback(
     (cx: number, cy: number) => {
-      const rect = canvasRef.current?.getBoundingClientRect() ?? { left: 0, top: 0 };
+      const rect = canvasRef.current?.getBoundingClientRect();
+
+      if (!rect) return { x: 0, y: 0 };
+
       return {
         x: (cx - rect.left - camera.x) / camera.scale,
-        y: (cy - rect.top - camera.y) / camera.scale
+        y: (cy - rect.top - camera.y) / camera.scale,
       };
     },
     [camera]
   );
 
-  /* =========================
-     PERSISTENCE — save to localStorage whenever key state changes
-  ========================= */
-  useEffect(() => { try { localStorage.setItem("arch_graph", JSON.stringify(graph)); } catch { } }, [graph]);
-  useEffect(() => { try { localStorage.setItem("arch_code", code); } catch { } }, [code]);
-  useEffect(() => { try { localStorage.setItem("arch_theme", theme); } catch { } }, [theme]);
-  useEffect(() => { try { localStorage.setItem("arch_language", language); } catch { } }, [language]);
+  const hasCanvasContent = graph.nodes.length > 0;
+  const hasPrompt = prompt.trim().length > 0;
+  const hasProjectData = hasCanvasContent || hasPrompt;
 
-  /* =========================
-     DRAG STATE
-  ========================= */
-  const dragRef = useRef<{
-    id: string;
-    offsetX: number; // world-space offset from node origin to click point
-    offsetY: number;
-    lastX: number;
-    lastY: number;
-  } | null>(null);
+  /* =======================
+     GRAPH ACTIONS
+  ======================= */
 
-  const frameRef = useRef<number | null>(null);
-
-  // Holds the AbortController for the active streaming request — lets user cancel mid-stream
-  const abortRef = useRef<AbortController | null>(null);
-
-  const cancelAI = () => {
-    abortRef.current?.abort();
-    abortRef.current = null;
-    setLoading(false);
-  };
-
-  /* =========================
-     WIRE STATE  (world-space coords)
-  ========================= */
-  const [wire, setWire] = useState<null | {
-    from: string;
-    fromSide: "top" | "right" | "bottom" | "left";
-    x1: number; y1: number; // port origin (world)
-    x2: number; y2: number; // current mouse (world)
-  }>(null);
-
-  /* =========================
-     ADD NODE
-  ========================= */
   const addNode = (type: NodeType, x: number, y: number) => {
-    setGraph(p => ({ ...p, nodes: [...p.nodes, { id: genId(), type, name: type, x, y }] }));
+    setGraph((g) => ({
+      ...g,
+      nodes: [...g.nodes, { id: genId(), type, name: type, x, y }],
+    }));
   };
 
-  /* =========================
-     DROP
-  ========================= */
-  const onDrop = (e: React.DragEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    const type = e.dataTransfer.getData("type") as NodeType;
-    if (!type) return;
-    const { x, y } = clientToWorld(e.clientX, e.clientY);
-    addNode(type, x - 80, y - 40); // center node on cursor
-  };
-
-  const onDragOver = (e: React.DragEvent<HTMLDivElement>) => e.preventDefault();
-
-  /* =========================
-     NODE POINTER DOWN
-  ========================= */
-  const onNodePointerDown = (e: React.PointerEvent, node: NodeData) => {
-    e.stopPropagation();
-    // offset in world space between node origin and click point
-    const { x: wx, y: wy } = clientToWorld(e.clientX, e.clientY);
-    dragRef.current = {
-      id: node.id,
-      offsetX: wx - node.x,
-      offsetY: wy - node.y,
-      lastX: node.x,
-      lastY: node.y
-    };
-    setSelectedIds([node.id]);
-  };
-
-  /* =========================
-     GLOBAL POINTER EVENTS
-  ========================= */
-  useEffect(() => {
-    const move = (e: PointerEvent) => {
-      if (frameRef.current) cancelAnimationFrame(frameRef.current);
-      frameRef.current = requestAnimationFrame(() => {
-
-        // ---- node drag ----
-        if (dragRef.current) {
-          const { id, offsetX, offsetY } = dragRef.current;
-          const { x: wx, y: wy } = clientToWorld(e.clientX, e.clientY);
-          const nx = wx - offsetX;
-          const ny = wy - offsetY;
-          dragRef.current.lastX = nx;
-          dragRef.current.lastY = ny;
-          // move DOM element directly for zero-lag feel
-          const el = document.getElementById(`node-${id}`);
-          if (el) el.style.transform = `translate(${nx}px, ${ny}px)`;
-        }
-
-        // ---- wire drag ----
-        if (wire) {
-          const { x, y } = clientToWorld(e.clientX, e.clientY);
-          setWire(w => w ? { ...w, x2: x, y2: y } : null);
-        }
-      });
-    };
-
-    const up = () => {
-      if (dragRef.current) {
-        const { id, lastX, lastY } = dragRef.current;
-        setGraph(p => ({
-          ...p,
-          nodes: p.nodes.map(n => n.id === id ? { ...n, x: lastX, y: lastY } : n)
-        }));
-        dragRef.current = null;
-      }
-    };
-
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up);
-    return () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
-    };
-  }, [wire, clientToWorld]);
-
-  /* =========================
-     START WIRE  (port pointerDown)
-     clientX/Y → convert to world space immediately
-  ========================= */
-  const startWire = (
-    id: string,
-    side: "top" | "right" | "bottom" | "left",
-    clientX: number,
-    clientY: number
-  ) => {
-    const { x, y } = clientToWorld(clientX, clientY);
-    setWire({ from: id, fromSide: side, x1: x, y1: y, x2: x, y2: y });
-  };
-
-  /* =========================
-     END WIRE  (port pointerUp)
-  ========================= */
-  const endWire = (
-    targetId: string,
-    targetSide: "top" | "right" | "bottom" | "left"
-  ) => {
-    if (!wire) return;
-    if (wire.from === targetId) { setWire(null); return; }
-
-    const exists = graph.edges.some(e => e.from === wire.from && e.to === targetId);
-    if (!exists) {
-      setGraph(p => ({
-        ...p,
-        edges: [
-          ...p.edges,
-          { id: genId(), from: wire.from, to: targetId, fromSide: wire.fromSide, toSide: targetSide }
-        ]
-      }));
-    }
-    setWire(null);
-  };
-
-  /* =========================
-     CANVAS POINTER DOWN  (background click)
-  ========================= */
-  const onCanvasPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
-    const tag = (e.target as HTMLElement).className;
-    if (typeof tag === "string" && (tag.includes("canvas") || tag.includes("world") || tag.includes("grid"))) {
-      setSelectedIds([]);
-      setWire(null);
-    }
-  };
-
-  /* =========================
-     DELETE / RENAME
-  ========================= */
   const onDelete = (id: string) => {
-    setGraph(p => ({
-      nodes: p.nodes.filter(n => n.id !== id),
-      edges: p.edges.filter(e => e.from !== id && e.to !== id)
+    setGraph((g) => ({
+      nodes: g.nodes.filter((n) => n.id !== id),
+      edges: g.edges.filter((e) => e.from !== id && e.to !== id),
     }));
   };
 
   const onRename = (id: string, name: string) => {
-    setGraph(p => ({ ...p, nodes: p.nodes.map(n => n.id === id ? { ...n, name } : n) }));
-  };
-  const [prompt, setPrompt] = useState("");
-  /* =========================
-     GENERATE CODE
-  ========================= */
-  const generate = () => {
-    const builtPrompt = buildAIPrompt();
-    setPrompt(builtPrompt);
-    setCode(builtPrompt); // show in UI
+    setGraph((g) => ({
+      ...g,
+      nodes: g.nodes.map((n) => (n.id === id ? { ...n, name } : n)),
+    }));
   };
 
-  /* =========================
-     AI HELPERS
-  ========================= */
+  const onDeleteEdge = useCallback((edgeId: string) => {
+    setGraph((g) => ({
+      ...g,
+      edges: g.edges.filter((edge) => edge.id !== edgeId),
+    }));
+    setSelectedEdgeId((current) => (current === edgeId ? null : current));
+  }, []);
 
-  /** Builds the fetch options shared by all AI calls */
-  const buildFetchOptions = (prompt: string, stream: boolean, signal: AbortSignal) => {
-    const isOpenAI = settings?.provider === "openai";
-    const url = isOpenAI
-      ? "https://api.openai.com/v1/chat/completions"
-      : `${settings?.baseUrl}/v1/chat/completions`;
-    const model = (settings?.model || "").trim() || (isOpenAI ? "gpt-4o-mini" : "local-model");
-    const headers: Record<string, string> = {
-      "Content-Type": "application/json",
-      "Accept": stream ? "text/event-stream" : "application/json",
-    };
-    if (isOpenAI) headers["Authorization"] = `Bearer ${settings?.apiKey}`;
-    const body = JSON.stringify({
-      model,
-      messages: [{ role: "user", content: prompt }],
-      temperature: 0.2,
-      max_tokens: 4096,
-      stream,
-    });
-    return { url, headers, body, signal };
-  };
+  const zoomAtPoint = useCallback(
+    (clientX: number, clientY: number, nextScale: number) => {
+      const rect = canvasRef.current?.getBoundingClientRect();
+      if (!rect) return;
 
-  /**
-   * Non-streaming call — awaits the full response and returns the text.
-   * Used for per-node generation where we need the result before proceeding.
-   */
-  const callAI = async (prompt: string, signal: AbortSignal): Promise<string> => {
-    const { url, headers, body } = buildFetchOptions(prompt, false, signal);
-    const res = await fetch(url, { method: "POST", mode: "cors", headers, body, signal });
-    if (!res.ok) { const t = await res.text(); throw new Error(`API error ${res.status}: ${t}`); }
-    const data = await res.json();
-    return data.choices?.[0]?.message?.content?.trim() || "";
-  };
+      const clampedScale = Math.min(MAX_SCALE, Math.max(MIN_SCALE, nextScale));
 
-  /**
-   * Streaming call — pipes tokens into setCode/setAiResponse as they arrive.
-   * Used for the final assembled output so the user sees it build up live.
-   */
-  const sendToAI = async (prompt: string) => {
-    if (!settings) { alert("Open Settings and configure your AI provider first."); return; }
+      setCamera((currentCamera) => {
+        const pointerX = clientX - rect.left;
+        const pointerY = clientY - rect.top;
+        const worldX = (pointerX - currentCamera.x) / currentCamera.scale;
+        const worldY = (pointerY - currentCamera.y) / currentCamera.scale;
 
-    setLoading(true);
-    setCode("");
-    setAiResponse("");
-
-    const controller = new AbortController();
-    abortRef.current = controller;
-
-    const { url, headers, body } = buildFetchOptions(prompt, true, controller.signal);
-
-    try {
-      const res = await fetch(url, {
-        method: "POST",
-        mode: "cors",
-        headers,
-        body,
-        signal: controller.signal,
+        return {
+          x: pointerX - worldX * clampedScale,
+          y: pointerY - worldY * clampedScale,
+          scale: clampedScale,
+        };
       });
+    },
+    []
+  );
 
-      if (!res.ok) { const t = await res.text(); throw new Error(`API error ${res.status}: ${t}`); }
-      if (!res.body) throw new Error("No response body — streaming not supported by this server.");
+  const onNodePointerDown = useCallback(
+    (e: React.PointerEvent, node: NodeData) => {
+      e.stopPropagation();
+      e.preventDefault();
 
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let accumulated = "";
-      let buffer = "";
+      const { x, y } = clientToWorld(e.clientX, e.clientY);
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("");
-        buffer = lines.pop() ?? "";
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed || trimmed === "data: [DONE]") continue;
-          const data = trimmed.startsWith("data: ") ? trimmed.slice(6) : trimmed;
-          try {
-            const delta = JSON.parse(data).choices?.[0]?.delta?.content;
-            if (typeof delta === "string" && delta.length > 0) {
-              accumulated += delta;
-              setCode(accumulated);
-              setAiResponse(accumulated);
-            }
-          } catch { }
-        }
-      }
-      if (!accumulated) {
-        setCode("// Model returned an empty response.");
-        setAiResponse("// Model returned an empty response.");
-      }
-    } catch (err: any) {
-      if (err.name === "AbortError") { setLoading(false); return; }
-      const msg = `// Error: ${err.message || "AI request failed"}`;
-      setAiResponse(msg);
-      setCode(msg);
-    } finally {
-      setLoading(false);
-    }
-  };
-  const downloadZip = async (files: GeneratedFile[]) => {
-    const zip = new JSZip();
+      setSelectedIds([node.id]);
+      setSelectedEdgeId(null);
+      setWire(null);
+      setPan(null);
+      setDrag({
+        nodeId: node.id,
+        offsetX: x - node.x,
+        offsetY: y - node.y,
+      });
+    },
+    [clientToWorld]
+  );
 
-    files.forEach(file => {
-      zip.file(file.path, file.content);
-    });
+  const startWire = useCallback(
+    (id: string, side: Edge["fromSide"], clientX: number, clientY: number) => {
+      const { x, y } = clientToWorld(clientX, clientY);
 
-    const blob = await zip.generateAsync({ type: "blob" });
-    saveAs(blob, `${projectName || "architecture-project"}.zip`);
-  };
-const buildAIPrompt = () => {
-  const nodeMap = new Map(graph.nodes.map(n => [n.id, n]));
+      setSelectedIds([id]);
+      setSelectedEdgeId(null);
+      setDrag(null);
+      setWire({
+        from: id,
+        fromSide: side,
+        x1: x,
+        y1: y,
+        x2: x,
+        y2: y,
+      });
+    },
+    [clientToWorld]
+  );
 
-  const nodesDesc = graph.nodes.map(n => {
-    return `- ${n.name} (${n.type})`;
-  }).join("\n");
+  const movePointerInteraction = useCallback(
+    (clientX: number, clientY: number) => {
+      const { x, y } = clientToWorld(clientX, clientY);
 
-  const edgesDesc = graph.edges.map(e => {
-    const fromNode = nodeMap.get(e.from);
-    const toNode = nodeMap.get(e.to);
-
-    const fromName = fromNode ? `${fromNode.name} (${fromNode.type})` : e.from;
-    const toName = toNode ? `${toNode.name} (${toNode.type})` : e.to;
-
-    return `- ${fromName} → ${toName}`;
-  }).join("\n");
-
-  return `
-You are a senior ${language} software architect specializing in ${framework}.
-
-Project Name:
-${projectName || "Unnamed Project"}
-
-Goal:
-Generate a production-ready backend system with clean architecture and best practices.
-
-System Components:
-
-${nodesDesc || "No components defined"}
-
-System Relationships (VERY IMPORTANT):
-
-${edgesDesc || "No connections defined"}
-
-Architecture Rules:
-- Use Clean Architecture (Controller → Service → Repository)
-- Proper separation of concerns
-- Use dependency injection
-- No business logic in controllers
-- Each component must be modular and testable
-- Use DTOs for API communication
-- Follow ${framework} best practices
-
-Output Requirements:
-- Full project structure
-- All required files (controllers, services, repositories, models)
-- Build file (Maven or Gradle depending on user selection)
-- application configuration
-- Dockerfile with multi-stage build
-- Terraform configuration for AWS deployment
-- Well-documented code with comments
-- README with run instructions
-
-Make the output production-ready and consistent.
-`;
-};
-  const finalPrompt = prompt || buildAIPrompt();
-  const askAI = async () => {
-    if (graph.nodes.length === 0) {
-      alert("Add nodes first");
-      return;
-    }
-
-    if (!settings) {
-      alert("Configure AI first");
-      return;
-    }
-
-    setLoading(true);
-    setCode("");
-
-    const controller = new AbortController();
-    abortRef.current = controller;
-    const { signal } = controller;
-
-    const files: GeneratedFile[] = [];
-    const folders = getFolders();
-
-    try {
-      // =========================
-      // GENERATE NODE FILES
-      // =========================
-      for (const node of graph.nodes) {
-        if (signal.aborted) return;
-
-        const cleanName = node.name.replace(/\s+/g, "");
-
-
-
-        const raw = await callAI(finalPrompt, signal);
-        const result = cleanAIResponse(raw);
-
-        files.push({
-          path: `${folders.java}/${cleanName}.java`,
-          content: result
+      if (pan) {
+        setCamera({
+          x: pan.originX + (clientX - pan.startX),
+          y: pan.originY + (clientY - pan.startY),
+          scale: camera.scale,
         });
       }
 
-      // =========================
-      // ADD MAIN CLASS
-      // =========================
-      files.push({
-        path: `${folders.java}/Application.java`,
-        content: generateMainClass()
-      });
-
-      // =========================
-      // ADD application.yml
-      // =========================
-      files.push({
-        path: `${folders.resources}/application.yml`,
-        content: generateApplicationYml()
-      });
-
-      // =========================
-      // ADD BUILD FILE
-      // =========================
-      if (buildTool === "maven") {
-        files.push({ path: "pom.xml", content: generatePomXml() });
-      } else {
-        files.push({ path: "build.gradle", content: generateGradle() });
+      if (drag) {
+        setGraph((g) => ({
+          ...g,
+          nodes: g.nodes.map((node) =>
+            node.id === drag.nodeId
+              ? { ...node, x: x - drag.offsetX, y: y - drag.offsetY }
+              : node
+          ),
+        }));
       }
 
-      // =========================
-      // PREVIEW
-      // =========================
-      const preview = files
-        .map(f => `// ===== ${f.path} =====\n${f.content}`)
-        .join("\n\n");
+      if (wire) {
+        setWire((currentWire) =>
+          currentWire
+            ? {
+                ...currentWire,
+                x2: x,
+                y2: y,
+              }
+            : currentWire
+        );
+      }
+    },
+    [camera.scale, clientToWorld, drag, pan, wire]
+  );
 
-      setCode(preview);
-      setAiResponse(""); // 👈 important
+  const endWire = useCallback(
+    (id: string, side: Edge["toSide"]) => {
+      if (!wire || wire.from === id) {
+        setWire(null);
+        return;
+      }
 
-      // =========================
-      // DOWNLOAD ZIP
-      // =========================
-      await downloadZip(files);
+      setGraph((g) => {
+        const alreadyExists = g.edges.some(
+          (edge) =>
+            edge.from === wire.from &&
+            edge.to === id &&
+            edge.fromSide === wire.fromSide &&
+            edge.toSide === side
+        );
 
-    } catch (err: any) {
-      const msg = `// Error: ${err.message}`;
-      setCode(msg);
-      setAiResponse(msg);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  /** Internal streaming call used by askAI for the final connection layer */
-  const sendToAIStreaming = async (
-    prompt: string,
-    signal: AbortSignal,
-    prefix: string = ""
-  ) => {
-    const { url, headers, body } = buildFetchOptions(prompt, true, signal);
-    try {
-      const res = await fetch(url, { method: "POST", mode: "cors", headers, body, signal });
-      if (!res.ok) { const t = await res.text(); throw new Error(`API error ${res.status}: ${t}`); }
-      if (!res.body) throw new Error("No streaming body.");
-
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let accumulated = prefix ? prefix + "\n\n// ══ COMPOSITION LAYER ══\n\n" : "";
-      let buffer = "";
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() ?? "";
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed || trimmed === "data: [DONE]") continue;
-          const data = trimmed.startsWith("data: ") ? trimmed.slice(6) : trimmed;
-          try {
-            const delta = JSON.parse(data).choices?.[0]?.delta?.content;
-            if (typeof delta === "string" && delta.length > 0) {
-              accumulated += delta;
-              setCode(accumulated);
-              setAiResponse(accumulated);
-            }
-          } catch { }
+        if (alreadyExists) {
+          return g;
         }
+
+        return {
+          ...g,
+          edges: [
+            ...g.edges,
+            {
+              id: genId(),
+              from: wire.from,
+              to: id,
+              fromSide: wire.fromSide,
+              toSide: side,
+            },
+          ],
+        };
+      });
+
+      setWire(null);
+    },
+    [wire]
+  );
+
+  const completeWireFromPointer = useCallback(
+    (clientX: number, clientY: number) => {
+      if (!wire) return;
+
+      const target = document.elementFromPoint(clientX, clientY) as HTMLElement | null;
+      const port = target?.closest(".port") as HTMLElement | null;
+      const nodeId = port?.dataset.nodeId;
+      const side = port?.dataset.portSide as Edge["toSide"] | undefined;
+
+      if (!nodeId || !side) {
+        setWire(null);
+        return;
       }
+
+      endWire(nodeId, side);
+    },
+    [endWire, wire]
+  );
+
+  /* =======================
+     DROP
+  ======================= */
+
+  const onDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    const type = e.dataTransfer.getData("type") as NodeType;
+    if (!type) return;
+
+    const { x, y } = clientToWorld(e.clientX, e.clientY);
+    addNode(type, x - 80, y - 40);
+  };
+
+  const onDragOver = (e: React.DragEvent<HTMLDivElement>) => e.preventDefault();
+
+  const onCanvasPointerDown = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      setSelectedIds([]);
+      setSelectedEdgeId(null);
+      setDrag(null);
+      setWire(null);
+
+      if (e.button !== 0 && e.button !== 1) {
+        setPan(null);
+        return;
+      }
+
+      e.preventDefault();
+      setPan({
+        pointerId: e.pointerId,
+        startX: e.clientX,
+        startY: e.clientY,
+        originX: camera.x,
+        originY: camera.y,
+      });
+    },
+    [camera.x, camera.y]
+  );
+
+  const onEdgePointerDown = useCallback(
+    (e: React.PointerEvent<SVGPathElement>, edgeId: string) => {
+      e.stopPropagation();
+      e.preventDefault();
+
+      setSelectedIds([]);
+      setDrag(null);
+      setWire(null);
+      setPan(null);
+      setSelectedEdgeId(edgeId);
+    },
+    []
+  );
+
+  const onCanvasWheel = useCallback(
+    (e: React.WheelEvent<HTMLDivElement>) => {
+      e.preventDefault();
+
+      const scaleFactor = e.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP;
+      zoomAtPoint(e.clientX, e.clientY, camera.scale * scaleFactor);
+    },
+    [camera.scale, zoomAtPoint]
+  );
+
+  const zoomIn = useCallback(() => {
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!rect) return;
+
+    zoomAtPoint(rect.left + rect.width / 2, rect.top + rect.height / 2, camera.scale * ZOOM_STEP);
+  }, [camera.scale, zoomAtPoint]);
+
+  const zoomOut = useCallback(() => {
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!rect) return;
+
+    zoomAtPoint(rect.left + rect.width / 2, rect.top + rect.height / 2, camera.scale / ZOOM_STEP);
+  }, [camera.scale, zoomAtPoint]);
+
+  const resetCamera = useCallback(() => {
+    setCamera({ x: 120, y: 72, scale: 1 });
+    setPan(null);
+  }, []);
+
+  const clearCanvas = useCallback(() => {
+    setGraph({ nodes: [], edges: [] });
+    setSelectedIds([]);
+    setSelectedEdgeId(null);
+    setWire(null);
+    setDrag(null);
+    setPan(null);
+    setPrompt("");
+    setCamera({ x: 120, y: 72, scale: 1 });
+  }, []);
+
+  const createNewProject = useCallback(() => {
+    setProjectName("architecture-app");
+    setLanguage("javascript");
+    setFramework("Node.js");
+    setBuildTool("npm");
+    setGraph({ nodes: [], edges: [] });
+    setPrompt("");
+    setSelectedIds([]);
+    setSelectedEdgeId(null);
+    setWire(null);
+    setDrag(null);
+    setPan(null);
+    setCamera({ x: 120, y: 72, scale: 1 });
+  }, []);
+
+  const onLoadProject = useCallback(() => {
+    folderInputRef.current?.click();
+  }, []);
+
+  const onOpenSavedProject = useCallback(() => {
+    projectFileInputRef.current?.click();
+  }, []);
+
+  const onProjectFolderSelected = useCallback(
+    async (e: ChangeEvent<HTMLInputElement>) => {
+      const files = e.target.files;
+      if (!files || files.length === 0) return;
+
+      setImportingProject(true);
+
+      try {
+        const importedProject = await projectImportService.importFromFiles(files);
+
+        setProjectName(importedProject.projectName);
+        setLanguage(importedProject.language);
+        setFramework(importedProject.framework);
+        setGraph(importedProject.graph);
+        setSelectedIds([]);
+        setSelectedEdgeId(null);
+        setWire(null);
+        setDrag(null);
+        setPan(null);
+        setPrompt(
+          buildAIPrompt(
+            importedProject.graph,
+            importedProject.language,
+            importedProject.framework,
+            importedProject.projectName
+          )
+        );
+        setCamera({ x: 120, y: 72, scale: 1 });
+      } catch (error) {
+        console.error(error);
+      } finally {
+        setImportingProject(false);
+        e.target.value = "";
+      }
+    },
+    [projectImportService]
+  );
+
+  const onSavedProjectSelected = useCallback(async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    try {
+      const raw = await file.text();
+      const parsed = JSON.parse(raw) as Partial<SavedProjectFile>;
+
+      if (
+        parsed.version !== 1 ||
+        !parsed.graph ||
+        !Array.isArray(parsed.graph.nodes) ||
+        !Array.isArray(parsed.graph.edges) ||
+        typeof parsed.projectName !== "string" ||
+        typeof parsed.language !== "string" ||
+        typeof parsed.framework !== "string" ||
+        typeof parsed.buildTool !== "string" ||
+        typeof parsed.prompt !== "string"
+      ) {
+        throw new Error("Invalid project file");
+      }
+
+      setProjectName(parsed.projectName);
+      setLanguage(parsed.language as Language);
+      setFramework(parsed.framework);
+      setBuildTool(parsed.buildTool);
+      setPrompt(parsed.prompt);
+      setGraph(parsed.graph);
+      setSelectedIds([]);
+      setSelectedEdgeId(null);
+      setWire(null);
+      setDrag(null);
+      setPan(null);
+      setCamera({ x: 120, y: 72, scale: 1 });
+    } catch (error) {
+      console.error(error);
+      alert("Could not open this project file.");
+    } finally {
+      e.target.value = "";
+    }
+  }, []);
+
+  const saveProject = useCallback(() => {
+    const payload: SavedProjectFile = {
+      version: 1,
+      savedAt: new Date().toISOString(),
+      projectName,
+      language,
+      framework,
+      buildTool,
+      prompt,
+      graph,
+    };
+
+    const blob = new Blob([JSON.stringify(payload, null, 2)], {
+      type: "application/json;charset=utf-8",
+    });
+
+    saveAs(blob, `${projectName || "project"}.archbuilder.json`);
+  }, [buildTool, framework, graph, language, projectName, prompt]);
+
+  /* =======================
+     PROMPT
+  ======================= */
+
+  const generate = () => {
+    if (!hasCanvasContent) {
+      alert("Add at least one node to the canvas before generating a prompt.");
+      return;
+    }
+
+    const p = buildAIPrompt(graph, language, framework, projectName);
+    setPrompt(p);
+  };
+
+  /* =======================
+     ASK AI (ZIP GENERATION)
+  ======================= */
+
+  const askAI = async () => {
+    if (!settings || !ai) return alert("Configure AI first");
+    if (!hasPrompt) return alert("Generate or write a prompt before asking AI.");
+
+    setLoading(true);
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    try {
+      const files: { path: string; content: string }[] = [];
+
+      const nodes = graphService.getNodes();
+
+      for (const node of nodes) {
+        const nodePrompt = buildNodeImplementationPrompt(
+          graph,
+          node,
+          language,
+          framework,
+          projectName
+        );
+
+        const raw = await ai.call(nodePrompt, controller.signal);
+
+        files.push({
+          path: getGeneratedFilePath(language, node),
+          content: cleanAIResponse(raw),
+        });
+      }
+
+      await zipService.download(files, projectName);
+    } catch (err) {
+      console.error(err);
     } finally {
       setLoading(false);
     }
   };
 
-  /* =========================
+
+  /* =======================
+     CLEANUP
+  ======================= */
+
+  useEffect(() => {
+    return () => abortRef.current?.abort();
+  }, []);
+
+  useEffect(() => {
+    const supportedBuildTools = BUILD_TOOLS_BY_LANGUAGE[language];
+    if (supportedBuildTools.includes(buildTool)) return;
+    setBuildTool(supportedBuildTools[0]);
+  }, [buildTool, language]);
+
+  useEffect(() => {
+    if (!selectedEdgeId) return;
+
+    const selectedEdgeStillExists = graph.edges.some((edge) => edge.id === selectedEdgeId);
+    if (!selectedEdgeStillExists) {
+      setSelectedEdgeId(null);
+    }
+  }, [graph.edges, selectedEdgeId]);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      const tagName = target?.tagName;
+      const isTypingContext =
+        !!target?.isContentEditable ||
+        tagName === "INPUT" ||
+        tagName === "TEXTAREA" ||
+        tagName === "SELECT";
+
+      if (isTypingContext || !selectedEdgeId) return;
+
+      if (e.key === "Delete" || e.key === "Backspace") {
+        e.preventDefault();
+        onDeleteEdge(selectedEdgeId);
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [onDeleteEdge, selectedEdgeId]);
+
+  useEffect(() => {
+    if (!drag && !wire && !pan) return;
+
+    const handlePointerMove = (e: PointerEvent) => {
+      movePointerInteraction(e.clientX, e.clientY);
+    };
+
+    const handlePointerUp = (e: PointerEvent) => {
+      if (wire) {
+        completeWireFromPointer(e.clientX, e.clientY);
+      }
+
+      if (pan && e.pointerId === pan.pointerId) {
+        setPan(null);
+      }
+
+      setDrag(null);
+    };
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerUp);
+
+    return () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+    };
+  }, [completeWireFromPointer, drag, wire, pan, movePointerInteraction]);
+
+  /* =======================
      UI
-  ========================= */
+  ======================= */
+
   return (
     <div className={`app ${theme}`}>
+      <input
+        ref={folderInputRef}
+        type="file"
+        hidden
+        multiple
+        onChange={onProjectFolderSelected}
+        {...({ webkitdirectory: "", directory: "" } as any)}
+      />
+
+      <input
+        ref={projectFileInputRef}
+        type="file"
+        hidden
+        accept=".archbuilder.json,application/json"
+        onChange={onSavedProjectSelected}
+      />
+
       <Topbar
         generate={generate}
         askAI={askAI}
         loading={loading}
+        canGenerate={hasCanvasContent}
+        canAskAI={hasPrompt}
+        canSaveProject={hasProjectData}
+        importingProject={importingProject}
         theme={theme}
         setTheme={setTheme}
         language={language}
@@ -729,44 +717,54 @@ Make the output production-ready and consistent.
         setFramework={setFramework}
         projectName={projectName}
         setProjectName={setProjectName}
+        buildTool={buildTool}
+        setBuildTool={setBuildTool}
         onOpenSettings={() => setShowSettings(true)}
-        onCancel={cancelAI}
+        onCancel={() => abortRef.current?.abort()}
+        onCreateProject={createNewProject}
+        onOpenProject={onOpenSavedProject}
+        onImportProject={onLoadProject}
+        onSaveProject={saveProject}
       />
 
       <div className="main">
-        <Palette />
+        <Palette framework={framework} />
 
         <Canvas
           canvasRef={canvasRef}
           graph={graph}
           camera={camera}
           selectedIds={selectedIds}
+          selectedEdgeId={selectedEdgeId}
           wire={wire}
           onDrop={onDrop}
           onDragOver={onDragOver}
-          onNodePointerDown={onNodePointerDown}
-          onCanvasPointerDown={onCanvasPointerDown}
           onDelete={onDelete}
           onRename={onRename}
           startWire={startWire}
-          moveWire={(cx, cy) => {
-            if (!wire) return;
-            const { x, y } = clientToWorld(cx, cy);
-            setWire(w => w ? { ...w, x2: x, y2: y } : null);
-          }}
-          endWire={endWire}
+          moveWire={movePointerInteraction}
+          onNodePointerDown={onNodePointerDown}
+          onEdgePointerDown={onEdgePointerDown}
+          onCanvasPointerDown={onCanvasPointerDown}
+          onCanvasWheel={onCanvasWheel}
+          onZoomIn={zoomIn}
+          onZoomOut={zoomOut}
+          onResetCamera={resetCamera}
+          onClearCanvas={clearCanvas}
         />
 
-        <CodePanel
-          prompt={prompt}
-          setPrompt={setPrompt}
-        />
+        <CodePanel prompt={prompt} setPrompt={setPrompt} />
       </div>
 
       {showSettings && (
         <div className="modal" onClick={() => setShowSettings(false)}>
-          <div onClick={e => e.stopPropagation()}>
-            <Settings onSave={(s) => { setSettings(s); setShowSettings(false); }} />
+          <div onClick={(e) => e.stopPropagation()}>
+            <Settings
+              onSave={(s) => {
+                setSettings(s);
+                setShowSettings(false);
+              }}
+            />
           </div>
         </div>
       )}

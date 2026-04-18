@@ -4,6 +4,9 @@ export default function Topbar({
   generate,
   askAI,
   loading,
+  canGenerate,
+  canAskAI,
+  canSaveProject,
   theme,
   setTheme,
   language,
@@ -16,15 +19,29 @@ export default function Topbar({
   setBuildTool,
   onOpenSettings,
   onCancel,
+  onCreateProject,
+  onOpenProject,
+  onImportProject,
+  onSaveProject,
+  importingProject,
 }: any) {
-
   const frameworksByLanguage: Record<string, string[]> = {
-    javascript: ["Node.js", "Express"],
-    typescript: ["Node.js", "NestJS"],
-    python: ["FastAPI", "Django"],
-    java: ["Spring Boot"],
-    cpp: ["None"]
+    javascript: ["Node.js", "Express", "React", "Vue", "Angular", "Next.js"],
+    typescript: ["Node.js", "NestJS", "React", "Vue", "Angular", "Next.js"],
+    python: ["FastAPI", "Django", "Flask"],
+    java: ["Spring Boot", "Quarkus"],
+    cpp: ["C++", "CMake"]
   };
+
+  const buildToolsByLanguage: Record<string, string[]> = {
+    javascript: ["npm", "pnpm", "yarn"],
+    typescript: ["npm", "pnpm", "yarn"],
+    python: ["pip", "poetry", "uv"],
+    java: ["maven", "gradle"],
+    cpp: ["cmake", "make", "meson"],
+  };
+
+  const buildTools = buildToolsByLanguage[language] || ["npm"];
 
   return (
     <div className="topbar">
@@ -32,6 +49,24 @@ export default function Topbar({
       {/* LEFT */}
       <div className="topbar-left">
         <div className="logo">⚡ ARCH BUILDER</div>
+
+        <div className="topbar-project-actions">
+          <button className="btn" onClick={onCreateProject}>
+            New Project
+          </button>
+
+          <button className="btn" onClick={onOpenProject}>
+            Open Project
+          </button>
+
+          <button className="btn" onClick={onImportProject} disabled={importingProject}>
+            {importingProject ? "Importing..." : "Import Folder"}
+          </button>
+
+          <button className="btn" onClick={onSaveProject} disabled={!canSaveProject}>
+            Save Project
+          </button>
+        </div>
       </div>
 
       {/* CENTER */}
@@ -83,8 +118,11 @@ export default function Topbar({
           value={buildTool}
           onChange={(e) => setBuildTool(e.target.value)}
         >
-          <option value="maven">Maven</option>
-          <option value="gradle">Gradle</option>
+          {buildTools.map((tool) => (
+            <option key={tool} value={tool}>
+              {tool}
+            </option>
+          ))}
         </select>
 
         {/* Settings */}
@@ -96,7 +134,7 @@ export default function Topbar({
       {/* RIGHT */}
       <div className="topbar-right">
 
-        <button className="btn" onClick={generate}>
+        <button className="btn" onClick={generate} disabled={!canGenerate}>
           Generate
         </button>
 
@@ -105,13 +143,13 @@ export default function Topbar({
             ⏹ Stop
           </button>
         ) : (
-          <button className="btn btn-primary" onClick={askAI}>
+          <button className="btn btn-primary" onClick={askAI} disabled={!canAskAI}>
             Ask AI
           </button>
         )}
 
         <button
-          className="btn"
+          className="btn topbar-theme-toggle"
           onClick={() =>
             setTheme(theme === "dark" ? "light" : "dark")
           }

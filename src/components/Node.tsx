@@ -14,17 +14,71 @@ interface Props {
     clientX: number,
     clientY: number
   ) => void;
-  onEndWire: (
-    id: string,
-    side: "top" | "right" | "bottom" | "left"
-  ) => void;
 }
 
 const TYPE_ICON: Record<string, string> = {
   api:      "⚡",
+  api_gateway: "🌐",
+  microservice: "🧩",
+  worker: "⚙️",
+  scheduler: "⏰",
   database: "🗄️",
+  sql_database: "🗃️",
+  nosql_database: "📚",
+  cache: "⚡",
+  object_storage: "🪣",
+  search_engine: "🔎",
   queue:    "📨",
+  message_broker: "🚌",
+  event_bus: "🛰️",
+  stream_processor: "🌊",
   auth:     "🔐",
+  websocket_gateway: "🔌",
+  grpc_service: "📡",
+  notification_service: "🔔",
+  email_service: "✉️",
+  payment_service: "💳",
+  file_service: "📁",
+  reverse_proxy: "🛡️",
+  load_balancer: "↔️",
+  rate_limiter: "🚦",
+  config_service: "📝",
+  secrets_manager: "🔑",
+  logging_service: "📜",
+  monitoring_service: "📊",
+  tracing_service: "🧭",
+  frontend_app: "🖥️",
+  landing_page: "🏠",
+  dashboard_page: "📊",
+  feature_page: "🗂️",
+  layout_shell: "🧱",
+  router: "🧭",
+  navigation_menu: "🧰",
+  state_store: "🧠",
+  client_api: "🔗",
+  auth_ui: "🔐",
+  profile_page: "👤",
+  form_module: "📝",
+  data_table: "📋",
+  chart_widget: "📈",
+  kanban_board: "🗃️",
+  modal_system: "🪟",
+  notification_center: "🔔",
+  search_ui: "🔎",
+  file_uploader: "📤",
+  media_gallery: "🖼️",
+  shared_components: "🧩",
+  design_system: "🎨",
+  hooks_layer: "🪝",
+  react_app: "⚛️",
+  react_hooks: "🪝",
+  context_provider: "🌍",
+  angular_app: "🅰️",
+  angular_module: "📦",
+  angular_service: "🛠️",
+  vue_app: "🟢",
+  vue_store: "🗂️",
+  vue_composable: "🪄",
   db:       "🗄️"
 };
 
@@ -34,8 +88,7 @@ export default function Node({
   onPointerDown,
   onDelete,
   onRename,
-  onStartWire,
-  onEndWire
+  onStartWire
 }: Props) {
   const [editing, setEditing] = useState(false);
   const [value, setValue] = useState(node.name);
@@ -59,15 +112,6 @@ export default function Node({
     e.stopPropagation();
     e.preventDefault();
     onStartWire(node.id, side, e.clientX, e.clientY);
-  };
-
-  // Port pointerUp — finish a wire
-  const handlePortUp = (
-    e: React.PointerEvent,
-    side: "top" | "right" | "bottom" | "left"
-  ) => {
-    e.stopPropagation();
-    onEndWire(node.id, side);
   };
 
   return (
@@ -112,8 +156,9 @@ export default function Node({
         <div
           key={side}
           className={`port ${side}`}
+          data-node-id={node.id}
+          data-port-side={side}
           onPointerDown={(e) => handlePortDown(e, side)}
-          onPointerUp={(e) => handlePortUp(e, side)}
         />
       ))}
     </div>
