@@ -1,0 +1,16 @@
+.app {
+  width: 100vw;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* MAIN LAYOUT ENGINE (IMPORTANT FIX) */
+.main {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 240px 1fr 340px;
+  height: calc(100vh - 52px);
+  overflow: hidden;
+}

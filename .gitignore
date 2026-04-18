@@ -1,0 +1,73 @@
+# =========================
+# DEPENDENCIES
+# =========================
+node_modules/
+
+# =========================
+# BUILD OUTPUT
+# =========================
+build/
+dist/
+out/
+coverage/
+
+# =========================
+# ENV FILES
+# =========================
+.env
+.env.local
+.env.development
+.env.test
+.env.production
+
+# Keep example env
+!.env.example
+
+# =========================
+# LOGS
+# =========================
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# =========================
+# OS FILES
+# =========================
+.DS_Store
+Thumbs.db
+
+# =========================
+# IDE / EDITORS
+# =========================
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# =========================
+# TEST / COVERAGE
+# =========================
+coverage/
+
+# =========================
+# CACHE
+# =========================
+.cache/
+.parcel-cache/
+.eslintcache
+
+# =========================
+# VITE (if using Vite)
+# =========================
+.vite/
+
+# =========================
+# NEXT (ignore if using Next.js inside React repo)
+# =========================
+.next/
+
+# =========================
+# TYPESCRIPT
+# =========================
+*.tsbuildinfo
