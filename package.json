@@ -1,9 +1,9 @@
 {
-  "name": "my-archiviz-project",
+  "name": "archiviz",
   "private": true,
   "version": "1.0.0",
   "type": "module",
-  "main": "main.cjs",
+  "main": "electron/main.cjs",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
@@ -40,19 +40,14 @@
     "vite": "^8.0.4"
   },
   "build": {
-    "appId": "com.archiviz.app",
-    "productName": "Archiviz App",
-    "directories": {
-      "output": "release"
-    },
+    "appId": "com.arch.app",
+    "productName": "ArchitectureApp",
     "files": [
       "dist/**/*",
-      "main.cjs",
-      "package.json"
+      "electron/**/*"
     ],
     "mac": {
-      "target": "dmg",
-      "category": "public.app-category.productivity"
+      "target": "dmg"
     }
   }
 }

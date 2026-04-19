@@ -89,6 +89,7 @@ export default function App() {
   const [buildTool, setBuildTool] = useState("npm");
   const [loading, setLoading] = useState(false);
   const [importingProject, setImportingProject] = useState(false);
+  const [projectFileHandle, setProjectFileHandle] = useState<FileSystemFileHandle | null>(null);
 
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
@@ -439,15 +440,62 @@ export default function App() {
     setDrag(null);
     setPan(null);
     setCamera({ x: 120, y: 72, scale: 1 });
+    setProjectFileHandle(null);
   }, []);
+
+  const applyProjectData = useCallback((parsed: SavedProjectFile) => {
+    setProjectName(parsed.projectName);
+    setLanguage(parsed.language as Language);
+    setFramework(parsed.framework);
+    setBuildTool(parsed.buildTool);
+    setPrompt(parsed.prompt);
+    setGraph(parsed.graph);
+    setSelectedIds([]);
+    setSelectedEdgeId(null);
+    setWire(null);
+    setDrag(null);
+    setPan(null);
+    setCamera({ x: 120, y: 72, scale: 1 });
+  }, []);
+
+  const validateProjectData = (parsed: Partial<SavedProjectFile>): parsed is SavedProjectFile => (
+    parsed.version === 1 &&
+    !!parsed.graph &&
+    Array.isArray(parsed.graph.nodes) &&
+    Array.isArray(parsed.graph.edges) &&
+    typeof parsed.projectName === "string" &&
+    typeof parsed.language === "string" &&
+    typeof parsed.framework === "string" &&
+    typeof parsed.buildTool === "string" &&
+    typeof parsed.prompt === "string"
+  );
 
   const onLoadProject = useCallback(() => {
     folderInputRef.current?.click();
   }, []);
 
-  const onOpenSavedProject = useCallback(() => {
-    projectFileInputRef.current?.click();
-  }, []);
+  const onOpenSavedProject = useCallback(async () => {
+    if ("showOpenFilePicker" in window) {
+      try {
+        const [handle] = await (window as any).showOpenFilePicker({
+          types: [{ description: "ArchBuilder Project", accept: { "application/json": [".json"] } }],
+          multiple: false,
+        });
+        const file = await handle.getFile();
+        const parsed = JSON.parse(await file.text()) as Partial<SavedProjectFile>;
+        if (!validateProjectData(parsed)) throw new Error("Invalid project file");
+        applyProjectData(parsed);
+        setProjectFileHandle(handle);
+      } catch (err: any) {
+        if (err.name !== "AbortError") {
+          console.error(err);
+          alert("Could not open this project file.");
+        }
+      }
+    } else {
+      projectFileInputRef.current?.click();
+    }
+  }, [applyProjectData]);
 
   const onProjectFolderSelected = useCallback(
     async (e: ChangeEvent<HTMLInputElement>) => {
@@ -487,49 +535,23 @@ export default function App() {
     [projectImportService]
   );
 
+  // Fallback for browsers without File System Access API
   const onSavedProjectSelected = useCallback(async (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-
     try {
-      const raw = await file.text();
-      const parsed = JSON.parse(raw) as Partial<SavedProjectFile>;
-
-      if (
-        parsed.version !== 1 ||
-        !parsed.graph ||
-        !Array.isArray(parsed.graph.nodes) ||
-        !Array.isArray(parsed.graph.edges) ||
-        typeof parsed.projectName !== "string" ||
-        typeof parsed.language !== "string" ||
-        typeof parsed.framework !== "string" ||
-        typeof parsed.buildTool !== "string" ||
-        typeof parsed.prompt !== "string"
-      ) {
-        throw new Error("Invalid project file");
-      }
-
-      setProjectName(parsed.projectName);
-      setLanguage(parsed.language as Language);
-      setFramework(parsed.framework);
-      setBuildTool(parsed.buildTool);
-      setPrompt(parsed.prompt);
-      setGraph(parsed.graph);
-      setSelectedIds([]);
-      setSelectedEdgeId(null);
-      setWire(null);
-      setDrag(null);
-      setPan(null);
-      setCamera({ x: 120, y: 72, scale: 1 });
+      const parsed = JSON.parse(await file.text()) as Partial<SavedProjectFile>;
+      if (!validateProjectData(parsed)) throw new Error("Invalid project file");
+      applyProjectData(parsed);
     } catch (error) {
       console.error(error);
       alert("Could not open this project file.");
     } finally {
       e.target.value = "";
     }
-  }, []);
+  }, [applyProjectData]);
 
-  const saveProject = useCallback(() => {
+  const saveProject = useCallback(async () => {
     const payload: SavedProjectFile = {
       version: 1,
       savedAt: new Date().toISOString(),
@@ -540,13 +562,38 @@ export default function App() {
       prompt,
       graph,
     };
+    const json = JSON.stringify(payload, null, 2);
 
-    const blob = new Blob([JSON.stringify(payload, null, 2)], {
-      type: "application/json;charset=utf-8",
-    });
+    if (projectFileHandle) {
+      try {
+        const writable = await projectFileHandle.createWritable();
+        await writable.write(json);
+        await writable.close();
+      } catch (err) {
+        console.error(err);
+      }
+      return;
+    }
 
-    saveAs(blob, `${projectName || "project"}.archbuilder.json`);
-  }, [buildTool, framework, graph, language, projectName, prompt]);
+    if ("showSaveFilePicker" in window) {
+      try {
+        const handle = await (window as any).showSaveFilePicker({
+          suggestedName: `${projectName || "project"}.archbuilder.json`,
+          types: [{ description: "ArchBuilder Project", accept: { "application/json": [".json"] } }],
+        });
+        setProjectFileHandle(handle);
+        const writable = await handle.createWritable();
+        await writable.write(json);
+        await writable.close();
+      } catch (err: any) {
+        if (err.name !== "AbortError") console.error(err);
+      }
+      return;
+    }
+
+    // Fallback for browsers without File System Access API
+    saveAs(new Blob([json], { type: "application/json;charset=utf-8" }), `${projectName || "project"}.archbuilder.json`);
+  }, [buildTool, framework, graph, language, projectName, prompt, projectFileHandle]);
 
   /* =======================
      PROMPT

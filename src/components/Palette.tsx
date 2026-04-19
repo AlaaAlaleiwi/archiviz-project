@@ -1,6 +1,7 @@
 import { useState } from "react";
 import "../styles.css";
 
+
 type Item = {
   type: string;
   label: string;
@@ -88,6 +89,7 @@ const frontendByStack: Record<string, Item[]> = {
 };
 
 export default function Palette({ framework }: any) {
+  const [isOpen, setIsOpen] = useState(true);
   const [activeTab, setActiveTab] = useState<"backend" | "frontend">("backend");
   const [searchQuery, setSearchQuery] = useState("");
   const [newItem, setNewItem] = useState({
@@ -133,9 +135,19 @@ export default function Palette({ framework }: any) {
   };
 
   return (
-    <div className="palette">
-      <div className="paletteHeader">COMPONENTS</div>
-      <div className="paletteTabs" role="tablist" aria-label="Component groups">
+    <div className={`palette${isOpen ? "" : " palette--collapsed"}`}>
+      <div className="paletteHeaderRow">
+        {isOpen && <div className="paletteHeader">COMPONENTS</div>}
+        <button
+          className="panelCollapseBtn"
+          onClick={() => setIsOpen(!isOpen)}
+          title={isOpen ? "Collapse panel" : "Expand panel"}
+        >
+          {isOpen ? "‹" : "›"}
+        </button>
+      </div>
+
+      {isOpen && <><div className="paletteTabs" role="tablist" aria-label="Component groups">
         <button
           type="button"
           className={`paletteTab ${activeTab === "backend" ? "active" : ""}`}
@@ -245,6 +257,7 @@ export default function Palette({ framework }: any) {
           </div>
         </>
       )}
+      </>}
     </div>
   );
 }
