@@ -135,6 +135,17 @@ Architecture expectations:
 - Use professional naming, modular structure, and implementation patterns that suit ${language} and ${framework}.
 - Make sensible assumptions where details are missing, but keep them realistic for a production environment.
 - Ensure the architecture is cohesive across frontend, backend, data, messaging, and infrastructure components when present.
+- Follow SOLID principles
+- Design for maintainability, readability, and scalability.
+- When implementing components, include necessary structure, types, validation, error handling, and documentation.
+- Reflect inter-component relationships through clean interfaces, service methods, API calls, or adapters as appropriate.
+- Use environment-driven configuration patterns for any configurable aspects.
+- Include security, observability, and resilience considerations where relevant.
+- One class per file
+- DTOs required (no entity exposure)
+- Swagger (Springdoc)
+- Flyway for database migrations
+- Use naming: V1__create_<table>.sql
 
 Production readiness requirements:
 - Include configuration strategy, environment variable usage, and secrets handling expectations.
@@ -149,6 +160,13 @@ Output quality bar:
 - The result should feel like work prepared by an experienced engineer for a real team.
 - Prefer robust, readable, and maintainable code over clever shortcuts.
 - Generate implementation choices that are consistent with enterprise-grade production software.
+
+Constraints:
+- Use correct annotations
+- Follow best practices
+- Keep code clean and maintainable
+- Avoid unnecessary complexity
+
 `.trim();
 }
 
@@ -202,11 +220,16 @@ Implementation instructions:
 - If configuration is needed, reference environment-driven configuration patterns.
 - If security, observability, or resilience concerns apply to this component, include them.
 - Honor the component contract above — the generated file must expose the interface and environment variables listed there.
+- Avoid demo shortcuts, placeholder logic, and toy examples unless absolutely necessary.
 
 Strict output rules:
 - Return only the raw contents of a single source file.
 - Do not wrap the answer in markdown fences.
 - Do not include explanations, bullet lists, or extra commentary.
 - Do not generate multiple files in one response.
+- Do NOT include markdown 
+- Generate MULTIPLE FILES if needed
+- Each file must start with:
+  === FILE: <full_path> ===
 `.trim();
 }
