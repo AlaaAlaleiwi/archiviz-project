@@ -18,6 +18,8 @@ interface Props {
   onDelete: any;
   onRename: any;
   onConfigure: (id: string) => void;
+  onViewCode: (id: string) => void;
+  generatedNodeIds: Set<string>;
   startWire: any;
   moveWire: (clientX: number, clientY: number) => void;
   onZoomIn: () => void;
@@ -77,6 +79,8 @@ export default function Canvas({
   onDelete,
   onRename,
   onConfigure,
+  onViewCode,
+  generatedNodeIds,
   startWire,
   moveWire,
   onZoomIn,
@@ -184,10 +188,12 @@ export default function Canvas({
             key={n.id}
             node={n}
             selected={selectedIds.includes(n.id)}
+            hasCode={generatedNodeIds.has(n.id)}
             onPointerDown={onNodePointerDown}
             onDelete={onDelete}
             onRename={onRename}
             onConfigure={onConfigure}
+            onViewCode={onViewCode}
             onStartWire={startWire}
           />
         ))}

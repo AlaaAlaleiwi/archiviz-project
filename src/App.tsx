@@ -8,6 +8,7 @@ import CodePanel from "./components/CodePanel";
 import Topbar from "./components/Topbar";
 import Settings, { type AISettings } from "./components/Settings";
 import NodeConfigModal from "./components/NodeConfigModal";
+import NodeCodeModal from "./components/NodeCodeModal";
 
 import type { Graph, NodeType, Camera, Language, NodeData, Edge } from "./types";
 
@@ -71,23 +72,38 @@ type SavedProjectFile = {
   graph: Graph;
 };
 
+
+/* ─── localStorage helpers ─────────────────────────────────────────── */
+function lsGet<T>(key: string, fallback: T): T {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? (JSON.parse(raw) as T) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function lsSet(key: string, value: unknown): void {
+  try { localStorage.setItem(key, JSON.stringify(value)); } catch {}
+}
+
 export default function App() {
   /* =======================
      STATE
   ======================= */
 
-  const [theme, setTheme] = useState<"dark" | "light">("dark");
-  const [settings, setSettings] = useState<AISettings | null>(null);
+  const [theme, setTheme] = useState<"dark" | "light">(() => lsGet("app_theme", "dark" as "dark" | "light"));
+  const [settings, setSettings] = useState<AISettings | null>(() => lsGet<AISettings | null>("ai_settings", null));
 
-  const [language, setLanguage] = useState<Language>("javascript");
-  const [framework, setFramework] = useState("Spring Boot");
+  const [language, setLanguage] = useState<Language>(() => lsGet<Language>("app_language", "javascript"));
+  const [framework, setFramework] = useState<string>(() => lsGet("app_framework", "Node.js"));
 
-  const [graph, setGraph] = useState<Graph>({ nodes: [], edges: [] });
+  const [graph, setGraph] = useState<Graph>(() => lsGet<Graph>("app_graph", { nodes: [], edges: [] }));
 
-  const [prompt, setPrompt] = useState("");
+  const [prompt, setPrompt] = useState<string>(() => lsGet("app_prompt", ""));
 
-  const [projectName, setProjectName] = useState("architecture-app");
-  const [buildTool, setBuildTool] = useState("npm");
+  const [projectName, setProjectName] = useState<string>(() => lsGet("app_projectName", "architecture-app"));
+  const [buildTool, setBuildTool] = useState<string>(() => lsGet("app_buildTool", "npm"));
   const [loading, setLoading] = useState(false);
   const [importingProject, setImportingProject] = useState(false);
   const [projectFileHandle, setProjectFileHandle] = useState<FileSystemFileHandle | null>(null);
@@ -99,6 +115,9 @@ export default function App() {
   const [pan, setPan] = useState<PanState>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [configuringNodeId, setConfiguringNodeId] = useState<string | null>(null);
+  const [viewingNodeId, setViewingNodeId] = useState<string | null>(null);
+  const [nodeCode, setNodeCode] = useState<Record<string, { path: string; content: string }>>({});
+  const [generationProgress, setGenerationProgress] = useState<{ current: number; total: number; nodeName: string } | null>(null);
 
   const [camera, setCamera] = useState<Camera>({ x: 120, y: 72, scale: 1 });
 
@@ -623,36 +642,50 @@ export default function App() {
     const controller = new AbortController();
     abortRef.current = controller;
 
+    const nodes = graphService.getNodes();
+    setGenerationProgress({ current: 0, total: nodes.length, nodeName: "" });
+
     try {
       const files: { path: string; content: string }[] = [];
+      const newCode: Record<string, { path: string; content: string }> = {};
 
-      const nodes = graphService.getNodes();
+      for (let i = 0; i < nodes.length; i++) {
+        const node = nodes[i];
+        setGenerationProgress({ current: i + 1, total: nodes.length, nodeName: node.name });
 
-      for (const node of nodes) {
-        const nodePrompt = buildNodeImplementationPrompt(
-          graph,
-          node,
-          language,
-          framework,
-          projectName
-        );
-
+        const nodePrompt = buildNodeImplementationPrompt(graph, node, language, framework, projectName);
         const raw = await ai.call(nodePrompt, controller.signal);
+        const content = cleanAIResponse(raw);
+        const path = getGeneratedFilePath(language, node);
 
-        files.push({
-          path: getGeneratedFilePath(language, node),
-          content: cleanAIResponse(raw),
-        });
+        files.push({ path, content });
+        newCode[node.id] = { path, content };
       }
 
+      setNodeCode(prev => ({ ...prev, ...newCode }));
       await zipService.download(files, projectName);
     } catch (err) {
       console.error(err);
     } finally {
       setLoading(false);
+      setGenerationProgress(null);
     }
   };
 
+
+
+  /* =======================
+     PERSIST TO LOCALSTORAGE
+  ======================= */
+
+  useEffect(() => { lsSet("app_theme",       theme);       }, [theme]);
+  useEffect(() => { lsSet("ai_settings",     settings);    }, [settings]);
+  useEffect(() => { lsSet("app_language",    language);    }, [language]);
+  useEffect(() => { lsSet("app_framework",   framework);   }, [framework]);
+  useEffect(() => { lsSet("app_projectName", projectName); }, [projectName]);
+  useEffect(() => { lsSet("app_buildTool",   buildTool);   }, [buildTool]);
+  useEffect(() => { lsSet("app_prompt",      prompt);      }, [prompt]);
+  useEffect(() => { lsSet("app_graph",       graph);       }, [graph]);
 
   /* =======================
      CLEANUP
@@ -791,6 +824,8 @@ export default function App() {
           onDelete={onDelete}
           onRename={onRename}
           onConfigure={setConfiguringNodeId}
+          onViewCode={setViewingNodeId}
+          generatedNodeIds={new Set(Object.keys(nodeCode))}
           startWire={startWire}
           moveWire={movePointerInteraction}
           onNodePointerDown={onNodePointerDown}
@@ -831,6 +866,38 @@ export default function App() {
           />
         ) : null;
       })()}
+
+      {viewingNodeId && (() => {
+        const node = graph.nodes.find(n => n.id === viewingNodeId);
+        const entry = nodeCode[viewingNodeId];
+        return node && entry ? (
+          <NodeCodeModal
+            nodeName={node.name}
+            nodeType={node.type}
+            filePath={entry.path}
+            code={entry.content}
+            onClose={() => setViewingNodeId(null)}
+          />
+        ) : null;
+      })()}
+
+      {generationProgress && (
+        <div className="gen-progress-hud">
+          <div className="gen-progress-header">
+            <span className="gen-progress-label">Generating code…</span>
+            <span className="gen-progress-count">
+              {generationProgress.current} / {generationProgress.total}
+            </span>
+          </div>
+          <div className="gen-progress-node">{generationProgress.nodeName}</div>
+          <div className="gen-progress-bar-track">
+            <div
+              className="gen-progress-bar-fill"
+              style={{ width: `${(generationProgress.current / generationProgress.total) * 100}%` }}
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 }

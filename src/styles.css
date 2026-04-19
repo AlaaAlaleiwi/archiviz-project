@@ -1818,3 +1818,133 @@ body  { background: var(--bg); color: var(--text); }
   0%, 100% { opacity: 1; }
   50%       { opacity: 0.4; }
 }
+
+/* =========================
+   NODE VIEW-CODE BUTTON
+========================= */
+.node-code-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  padding: 4px 8px;
+  margin-top: 2px;
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  border-radius: 6px;
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+  font-family: ui-monospace, monospace;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.node-code-btn:hover {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  border-color: var(--accent);
+}
+
+/* =========================
+   GENERATION PROGRESS HUD
+========================= */
+.gen-progress-hud {
+  position: fixed;
+  bottom: 28px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 300;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 14px 20px;
+  min-width: 320px;
+  max-width: 480px;
+  box-shadow: 0 20px 60px var(--shadow-color);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.gen-progress-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.gen-progress-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.gen-progress-count {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  font-family: ui-monospace, monospace;
+}
+
+.gen-progress-node {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.gen-progress-bar-track {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--border);
+  overflow: hidden;
+}
+
+.gen-progress-bar-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent);
+  transition: width 0.4s ease;
+}
+
+/* =========================
+   NODE CODE VIEWER MODAL
+========================= */
+.ncm-code-panel {
+  width: 720px;
+  max-width: calc(100vw - 48px);
+  max-height: calc(100vh - 80px);
+}
+
+.ncm-code-body {
+  flex: 1;
+  overflow: auto;
+  background: var(--panel2);
+  padding: 0;
+}
+
+.ncm-code-pre {
+  margin: 0;
+  padding: 20px 24px;
+  font-family: ui-monospace, "Cascadia Code", "Fira Code", monospace;
+  font-size: 12.5px;
+  line-height: 1.65;
+  color: var(--text);
+  white-space: pre;
+  tab-size: 2;
+}
+
+.ncm-copy-btn {
+  padding: 5px 14px;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  border-radius: 8px;
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.ncm-copy-btn:hover { background: color-mix(in srgb, var(--accent) 20%, transparent); }

@@ -6,10 +6,12 @@ import { hasConfig, summarizeConfig } from "../utils/componentConfigs";
 interface Props {
   node: NodeData;
   selected: boolean;
+  hasCode: boolean;
   onPointerDown: (e: React.PointerEvent, node: NodeData) => void;
   onDelete: (id: string) => void;
   onRename: (id: string, name: string) => void;
   onConfigure: (id: string) => void;
+  onViewCode: (id: string) => void;
   onStartWire: (
     id: string,
     side: "top" | "right" | "bottom" | "left",
@@ -87,10 +89,12 @@ const TYPE_ICON: Record<string, string> = {
 export default function Node({
   node,
   selected,
+  hasCode,
   onPointerDown,
   onDelete,
   onRename,
   onConfigure,
+  onViewCode,
   onStartWire,
 }: Props) {
   const [editing, setEditing] = useState(false);
@@ -162,6 +166,18 @@ export default function Node({
           ) : (
             <span className="node-config-prompt">⚙ Configure</span>
           )}
+        </button>
+      )}
+
+      {/* ── view code button ── */}
+      {hasCode && (
+        <button
+          className="node-code-btn"
+          onClick={(e) => { e.stopPropagation(); onViewCode(node.id); }}
+          onPointerDown={(e) => e.stopPropagation()}
+          title="View generated code"
+        >
+          {"</>"}
         </button>
       )}
 

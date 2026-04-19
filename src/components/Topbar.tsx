@@ -80,7 +80,7 @@ function DropdownMenu({ label, items }: { label: string; items: DropdownItem[] }
 }
 
 /* ─────────────────────────────────────────
-   UNSAVED CHANGES CONFIRMATION MODAL
+   UNSAVED CHANGES MODAL
 ───────────────────────────────────────── */
 function UnsavedChangesModal({
   projectName,
@@ -120,7 +120,7 @@ function UnsavedChangesModal({
 function NewProjectModal({
   initial,
   title = "New Project",
-  confirmLabel = "Create Project →",
+  confirmLabel = "Next →",
   onConfirm,
   onClose,
 }: {
@@ -146,7 +146,6 @@ function NewProjectModal({
   const handleConfirm = () => {
     if (!cfg.projectName.trim()) { alert("Please enter a project name."); return; }
     onConfirm(cfg);
-    onClose();
   };
 
   return (
@@ -230,6 +229,129 @@ function NewProjectModal({
 }
 
 /* ─────────────────────────────────────────
+   WINDOW PICKER MODAL
+───────────────────────────────────────── */
+function WindowPickerModal({
+  cfg,
+  onSameWindow,
+  onNewTab,
+  onBack,
+  onClose,
+}: {
+  cfg: NewProjectConfig;
+  onSameWindow: () => void;
+  onNewTab: () => void;
+  onBack: () => void;
+  onClose: () => void;
+}) {
+  return (
+    <div className="modal" onClick={onClose}>
+      <div className="np-modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 460 }}>
+
+        <div className="np-header">
+          <span className="np-title">Where to open "{cfg.projectName}"?</span>
+          <button className="np-close" onClick={onClose}>✕</button>
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, padding: "4px 0 8px" }}>
+          {/* Same window */}
+          <button
+            onClick={onSameWindow}
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              gap: 10,
+              padding: "22px 16px",
+              background: "var(--panel2)",
+              border: "1px solid var(--border)",
+              borderRadius: 14,
+              cursor: "pointer",
+              transition: "border-color 0.15s, background 0.15s",
+            }}
+            onMouseEnter={e => {
+              (e.currentTarget as HTMLButtonElement).style.borderColor = "var(--accent)";
+              (e.currentTarget as HTMLButtonElement).style.background = "color-mix(in srgb, var(--accent) 6%, var(--panel2))";
+            }}
+            onMouseLeave={e => {
+              (e.currentTarget as HTMLButtonElement).style.borderColor = "var(--border)";
+              (e.currentTarget as HTMLButtonElement).style.background = "var(--panel2)";
+            }}
+          >
+            <span style={{ fontSize: 32 }}>🖥️</span>
+            <span style={{ fontSize: 13, fontWeight: 700, color: "var(--text)" }}>Same Window</span>
+            <span style={{ fontSize: 11, color: "var(--muted)", textAlign: "center", lineHeight: 1.4 }}>
+              Replace the current project in this window
+            </span>
+          </button>
+
+          {/* New tab */}
+          <button
+            onClick={onNewTab}
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              gap: 10,
+              padding: "22px 16px",
+              background: "var(--panel2)",
+              border: "1px solid var(--border)",
+              borderRadius: 14,
+              cursor: "pointer",
+              transition: "border-color 0.15s, background 0.15s",
+            }}
+            onMouseEnter={e => {
+              (e.currentTarget as HTMLButtonElement).style.borderColor = "var(--accent)";
+              (e.currentTarget as HTMLButtonElement).style.background = "color-mix(in srgb, var(--accent) 6%, var(--panel2))";
+            }}
+            onMouseLeave={e => {
+              (e.currentTarget as HTMLButtonElement).style.borderColor = "var(--border)";
+              (e.currentTarget as HTMLButtonElement).style.background = "var(--panel2)";
+            }}
+          >
+            <span style={{ fontSize: 32 }}>🗂️</span>
+            <span style={{ fontSize: 13, fontWeight: 700, color: "var(--text)" }}>New Tab</span>
+            <span style={{ fontSize: 11, color: "var(--muted)", textAlign: "center", lineHeight: 1.4 }}>
+              Keep this project open and start fresh in a new browser tab
+            </span>
+          </button>
+        </div>
+
+        <div className="np-actions">
+          <button className="btn" onClick={onBack}>← Back</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ─────────────────────────────────────────
+   HELPERS — encode/decode new-project params
+   in the URL so the new tab can auto-init
+───────────────────────────────────────── */
+export function encodeProjectParams(cfg: NewProjectConfig): string {
+  const params = new URLSearchParams({
+    newProject: "1",
+    projectName: cfg.projectName,
+    language:    cfg.language,
+    framework:   cfg.framework,
+    buildTool:   cfg.buildTool,
+  });
+  return params.toString();
+}
+
+export function readProjectParamsFromURL(): NewProjectConfig | null {
+  const params = new URLSearchParams(window.location.search);
+  if (params.get("newProject") !== "1") return null;
+  return {
+    projectName: params.get("projectName") || "new-project",
+    language:    params.get("language")    || "javascript",
+    framework:   params.get("framework")   || "Node.js",
+    buildTool:   params.get("buildTool")   || "npm",
+  };
+}
+
+/* ─────────────────────────────────────────
    TOPBAR
 ───────────────────────────────────────── */
 export default function Topbar({
@@ -258,9 +380,12 @@ export default function Topbar({
   onSaveProject,
   importingProject,
   onLogout,
+  aiHealthy,
+  aiError,
 }: any) {
-  type Step = "idle" | "unsaved" | "newProject" | "editProject";
+  type Step = "idle" | "unsaved" | "newProject" | "windowPicker" | "editProject";
   const [step, setStep] = useState<Step>("idle");
+  const [pendingCfg, setPendingCfg] = useState<NewProjectConfig | null>(null);
 
   const handleNewClick = () => {
     if (hasUnsavedChanges) {
@@ -277,12 +402,32 @@ export default function Topbar({
 
   const handleDiscardAndContinue = () => setStep("newProject");
 
-  const handleNewProjectConfirm = (cfg: NewProjectConfig) => {
-    onCreateProject?.();
-    setLanguage(cfg.language);
-    setFramework(cfg.framework);
-    setBuildTool(cfg.buildTool);
-    setProjectName(cfg.projectName);
+  /* After the config form, always go to the window picker */
+  const handleNewProjectCfgConfirm = (cfg: NewProjectConfig) => {
+    setPendingCfg(cfg);
+    setStep("windowPicker");
+  };
+
+  /* User chose "same window" — pass full config so App resets + applies in one shot */
+  const handleSameWindow = () => {
+    if (!pendingCfg) return;
+    onCreateProject?.({
+      projectName: pendingCfg.projectName,
+      language:    pendingCfg.language,
+      framework:   pendingCfg.framework,
+      buildTool:   pendingCfg.buildTool,
+    });
+    setPendingCfg(null);
+    setStep("idle");
+  };
+
+  /* User chose "new tab" — open a fresh tab with config encoded in the URL */
+  const handleNewTab = () => {
+    if (!pendingCfg) return;
+    const qs = encodeProjectParams(pendingCfg);
+    const url = `${window.location.origin}${window.location.pathname}?${qs}`;
+    window.open(url, "_blank", "noopener");
+    setPendingCfg(null);
     setStep("idle");
   };
 
@@ -294,7 +439,7 @@ export default function Topbar({
     setStep("idle");
   };
 
-  const closeAll = () => setStep("idle");
+  const closeAll = () => { setPendingCfg(null); setStep("idle"); };
 
   const langBadge = LANGUAGE_ICONS[language] || language.toUpperCase();
 
@@ -379,8 +524,32 @@ export default function Topbar({
             </button>
           )}
 
-          <button className="btn" onClick={onOpenSettings} title="Settings">
+          <button
+            className="btn"
+            onClick={onOpenSettings}
+            title={
+              aiHealthy === true  ? "AI connected" :
+              aiHealthy === false ? `AI error: ${aiError}` :
+              "Settings"
+            }
+            style={{ position: "relative" }}
+          >
             Settings
+            {aiHealthy !== null && (
+              <span
+                style={{
+                  position: "absolute",
+                  top: 6,
+                  right: 6,
+                  width: 7,
+                  height: 7,
+                  borderRadius: "50%",
+                  background: aiHealthy ? "#22c55e" : "#ef4444",
+                  boxShadow: aiHealthy ? "0 0 5px #22c55e" : "0 0 5px #ef4444",
+                  display: "block",
+                }}
+              />
+            )}
           </button>
 
           <button
@@ -397,6 +566,8 @@ export default function Topbar({
         </div>
       </div>
 
+      {/* ── MODALS ───────────────────────────────────────────────── */}
+
       {step === "unsaved" && (
         <UnsavedChangesModal
           projectName={projectName}
@@ -409,7 +580,17 @@ export default function Topbar({
       {step === "newProject" && (
         <NewProjectModal
           initial={{ projectName: "", language, framework, buildTool }}
-          onConfirm={handleNewProjectConfirm}
+          onConfirm={handleNewProjectCfgConfirm}
+          onClose={closeAll}
+        />
+      )}
+
+      {step === "windowPicker" && pendingCfg && (
+        <WindowPickerModal
+          cfg={pendingCfg}
+          onSameWindow={handleSameWindow}
+          onNewTab={handleNewTab}
+          onBack={() => setStep("newProject")}
           onClose={closeAll}
         />
       )}

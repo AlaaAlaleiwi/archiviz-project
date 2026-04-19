@@ -1,36 +1,98 @@
-const { app, BrowserWindow } = require('electron');
-const path = require('path');
+const { app, BrowserWindow, Menu, dialog, ipcMain } = require("electron");
+const path = require("path");
+const fs = require("fs");
+
+let win;
 
 const isDev = !app.isPackaged;
 
 function createWindow() {
-  const win = new BrowserWindow({
+  win = new BrowserWindow({
     width: 1200,
     height: 800,
-    icon: path.join(__dirname, '../assets/Archiviz.png'),
+    icon: path.join(__dirname, "../build/icon.png"),
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
+      preload: path.join(__dirname, "preload.cjs"),
     },
   });
 
   if (isDev) {
-    win.loadURL('http://localhost:5173');
+    win.loadURL("http://localhost:5173");
     win.webContents.openDevTools();
   } else {
-    // In production, __dirname is inside the asar at the electron/ folder.
-    // Vite outputs the renderer to dist/, which is also packaged into the asar.
-    // We navigate up one level from electron/ then into dist/index.html.
-    win.loadFile(path.join(__dirname, '../dist/index.html'));
+    win.loadFile(path.join(__dirname, "../dist/index.html"));
   }
+
+  setupMenu();
 }
 
-app.whenReady().then(createWindow);
+/* ─────────────────────────────
+   MENU BAR
+───────────────────────────── */
+function setupMenu() {
+  const template = [
+    {
+      label: "File",
+      submenu: [
+        {
+          label: "New Project",
+          accelerator: "CmdOrCtrl+N",
+          click: () => win.webContents.send("menu:new-project"),
+        },
+        {
+          label: "Save Project",
+          accelerator: "CmdOrCtrl+S",
+          click: () => win.webContents.send("menu:save-project"),
+        },
+        {
+          type: "separator",
+        },
+        {
+          label: "Export Project",
+          click: async () => {
+            const result = await dialog.showSaveDialog(win, {
+              title: "Export Project",
+              defaultPath: "project.arch.json",
+            });
 
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit();
+            if (!result.canceled) {
+              win.webContents.send("menu:export-project", result.filePath);
+            }
+          },
+        },
+        { type: "separator" },
+        { role: "quit" },
+      ],
+    },
+    {
+      label: "Edit",
+      role: "editMenu",
+    },
+  ];
+
+  const menu = Menu.buildFromTemplate(template);
+  Menu.setApplicationMenu(menu);
+}
+
+/* ─────────────────────────────
+   IPC (SAVE FILE)
+───────────────────────────── */
+ipcMain.handle("save-project", async (event, data, filePath) => {
+  fs.writeFileSync(filePath, JSON.stringify(data, null, 2), "utf-8");
+  return true;
 });
 
-app.on('activate', () => {
+/* ─────────────────────────────
+   APP LIFECYCLE
+───────────────────────────── */
+app.whenReady().then(createWindow);
+
+app.on("window-all-closed", () => {
+  if (process.platform !== "darwin") app.quit();
+});
+
+app.on("activate", () => {
   if (BrowserWindow.getAllWindows().length === 0) createWindow();
 });
