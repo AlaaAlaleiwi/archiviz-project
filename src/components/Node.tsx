@@ -1,6 +1,7 @@
 import "../styles.css";
 import { useRef, useState, useEffect } from "react";
 import type { NodeData } from "../types";
+import { hasConfig, summarizeConfig } from "../utils/componentConfigs";
 
 interface Props {
   node: NodeData;
@@ -8,6 +9,7 @@ interface Props {
   onPointerDown: (e: React.PointerEvent, node: NodeData) => void;
   onDelete: (id: string) => void;
   onRename: (id: string, name: string) => void;
+  onConfigure: (id: string) => void;
   onStartWire: (
     id: string,
     side: "top" | "right" | "bottom" | "left",
@@ -88,41 +90,37 @@ export default function Node({
   onPointerDown,
   onDelete,
   onRename,
-  onStartWire
+  onConfigure,
+  onStartWire,
 }: Props) {
   const [editing, setEditing] = useState(false);
   const [value, setValue] = useState(node.name);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => { if (editing) inputRef.current?.focus(); }, [editing]);
-
-  // Keep value in sync if node.name changes externally
   useEffect(() => { setValue(node.name); }, [node.name]);
 
-  const commitRename = () => {
-    setEditing(false);
-    onRename(node.id, value);
-  };
+  const commitRename = () => { setEditing(false); onRename(node.id, value); };
 
-  // Port pointerDown — start a wire
-  const handlePortDown = (
-    e: React.PointerEvent,
-    side: "top" | "right" | "bottom" | "left"
-  ) => {
+  const handlePortDown = (e: React.PointerEvent, side: "top" | "right" | "bottom" | "left") => {
     e.stopPropagation();
     e.preventDefault();
     onStartWire(node.id, side, e.clientX, e.clientY);
   };
 
+  const configurable  = hasConfig(node.type);
+  const configured    = configurable && !!node.config && Object.keys(node.config).length > 0;
+  const configSummary = configured ? summarizeConfig(node.config!) : null;
+
   return (
     <div
       id={`node-${node.id}`}
-      className={`node ${selected ? "selected" : ""}`}
+      className={`node ${selected ? "selected" : ""} ${configured ? "node--configured" : ""}`}
       style={{ transform: `translate(${node.x}px, ${node.y}px)` }}
       onPointerDown={(e) => onPointerDown(e, node)}
       onDoubleClick={(e) => { e.stopPropagation(); setEditing(true); }}
     >
-      {/* ---- header ---- */}
+      {/* ── header ── */}
       <div className="node-header">
         <span className="node-icon">{TYPE_ICON[node.type] ?? "📦"}</span>
 
@@ -151,7 +149,23 @@ export default function Node({
 
       <div className="node-type">{node.type}</div>
 
-      {/* ---- ports ---- */}
+      {/* ── config row ── */}
+      {configurable && (
+        <button
+          className={`node-config-btn ${configured ? "configured" : "unconfigured"}`}
+          onClick={(e) => { e.stopPropagation(); onConfigure(node.id); }}
+          onPointerDown={(e) => e.stopPropagation()}
+          title="Configure component"
+        >
+          {configured ? (
+            <span className="node-config-summary">{configSummary}</span>
+          ) : (
+            <span className="node-config-prompt">⚙ Configure</span>
+          )}
+        </button>
+      )}
+
+      {/* ── ports ── */}
       {(["top", "right", "bottom", "left"] as const).map(side => (
         <div
           key={side}

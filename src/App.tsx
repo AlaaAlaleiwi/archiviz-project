@@ -7,6 +7,7 @@ import Canvas from "./components/Canvas";
 import CodePanel from "./components/CodePanel";
 import Topbar from "./components/Topbar";
 import Settings, { type AISettings } from "./components/Settings";
+import NodeConfigModal from "./components/NodeConfigModal";
 
 import type { Graph, NodeType, Camera, Language, NodeData, Edge } from "./types";
 
@@ -97,6 +98,7 @@ export default function App() {
   const [drag, setDrag] = useState<DragState>(null);
   const [pan, setPan] = useState<PanState>(null);
   const [showSettings, setShowSettings] = useState(false);
+  const [configuringNodeId, setConfiguringNodeId] = useState<string | null>(null);
 
   const [camera, setCamera] = useState<Camera>({ x: 120, y: 72, scale: 1 });
 
@@ -788,6 +790,7 @@ export default function App() {
           onDragOver={onDragOver}
           onDelete={onDelete}
           onRename={onRename}
+          onConfigure={setConfiguringNodeId}
           startWire={startWire}
           moveWire={movePointerInteraction}
           onNodePointerDown={onNodePointerDown}
@@ -815,6 +818,19 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {configuringNodeId && (() => {
+        const node = graph.nodes.find(n => n.id === configuringNodeId);
+        return node ? (
+          <NodeConfigModal
+            node={node}
+            onSave={(id, config) =>
+              setGraph(g => ({ ...g, nodes: g.nodes.map(n => n.id === id ? { ...n, config } : n) }))
+            }
+            onClose={() => setConfiguringNodeId(null)}
+          />
+        ) : null;
+      })()}
     </div>
   );
 }

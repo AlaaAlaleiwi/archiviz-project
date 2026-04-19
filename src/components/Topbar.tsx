@@ -119,10 +119,14 @@ function UnsavedChangesModal({
 ───────────────────────────────────────── */
 function NewProjectModal({
   initial,
+  title = "New Project",
+  confirmLabel = "Create Project →",
   onConfirm,
   onClose,
 }: {
   initial: NewProjectConfig;
+  title?: string;
+  confirmLabel?: string;
   onConfirm: (cfg: NewProjectConfig) => void;
   onClose: () => void;
 }) {
@@ -150,7 +154,7 @@ function NewProjectModal({
       <div className="np-modal" onClick={e => e.stopPropagation()}>
 
         <div className="np-header">
-          <span className="np-title">New Project</span>
+          <span className="np-title">{title}</span>
           <button className="np-close" onClick={onClose}>✕</button>
         </div>
 
@@ -217,7 +221,7 @@ function NewProjectModal({
         <div className="np-actions">
           <button className="btn" onClick={onClose}>Cancel</button>
           <button className="btn btn-primary" onClick={handleConfirm}>
-            Create Project →
+            {confirmLabel}
           </button>
         </div>
       </div>
@@ -255,7 +259,7 @@ export default function Topbar({
   importingProject,
   onLogout,
 }: any) {
-  type Step = "idle" | "unsaved" | "newProject";
+  type Step = "idle" | "unsaved" | "newProject" | "editProject";
   const [step, setStep] = useState<Step>("idle");
 
   const handleNewClick = () => {
@@ -275,6 +279,14 @@ export default function Topbar({
 
   const handleNewProjectConfirm = (cfg: NewProjectConfig) => {
     onCreateProject?.();
+    setLanguage(cfg.language);
+    setFramework(cfg.framework);
+    setBuildTool(cfg.buildTool);
+    setProjectName(cfg.projectName);
+    setStep("idle");
+  };
+
+  const handleEditProjectConfirm = (cfg: NewProjectConfig) => {
     setLanguage(cfg.language);
     setFramework(cfg.framework);
     setBuildTool(cfg.buildTool);
@@ -334,6 +346,13 @@ export default function Topbar({
                 </>
               : <span className="topbar-project-placeholder">Untitled Project</span>
             }
+            <button
+              className="topbar-edit-btn"
+              onClick={() => setStep("editProject")}
+              title="Edit project settings"
+            >
+              ✎
+            </button>
           </div>
           <div className="topbar-project-meta">
             <span className="topbar-lang-badge">{langBadge}</span>
@@ -391,6 +410,16 @@ export default function Topbar({
         <NewProjectModal
           initial={{ projectName: "", language, framework, buildTool }}
           onConfirm={handleNewProjectConfirm}
+          onClose={closeAll}
+        />
+      )}
+
+      {step === "editProject" && (
+        <NewProjectModal
+          title="Edit Project Settings"
+          confirmLabel="Save Settings →"
+          initial={{ projectName, language, framework, buildTool }}
+          onConfirm={handleEditProjectConfirm}
           onClose={closeAll}
         />
       )}

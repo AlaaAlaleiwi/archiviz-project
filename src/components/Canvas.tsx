@@ -17,6 +17,7 @@ interface Props {
   onCanvasWheel: (e: React.WheelEvent<HTMLDivElement>) => void;
   onDelete: any;
   onRename: any;
+  onConfigure: (id: string) => void;
   startWire: any;
   moveWire: (clientX: number, clientY: number) => void;
   onZoomIn: () => void;
@@ -75,6 +76,7 @@ export default function Canvas({
   onCanvasWheel,
   onDelete,
   onRename,
+  onConfigure,
   startWire,
   moveWire,
   onZoomIn,
@@ -185,6 +187,7 @@ export default function Canvas({
             onPointerDown={onNodePointerDown}
             onDelete={onDelete}
             onRename={onRename}
+            onConfigure={onConfigure}
             onStartWire={startWire}
           />
         ))}

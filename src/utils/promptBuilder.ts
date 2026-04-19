@@ -1,4 +1,6 @@
 import type { Graph, Language, NodeData } from "../types";
+import { getComponentTemplate, formatTemplateForPrompt } from "./componentTemplates";
+import { getComponentConfig, formatConfigForPrompt } from "./componentConfigs";
 
 const FRONTEND_NODE_HINTS = [
   "frontend",
@@ -162,6 +164,16 @@ export function buildNodeImplementationPrompt(
   const filePath = getGeneratedFilePath(language, node);
   const frontendNode = isFrontendNode(node);
 
+  const template = getComponentTemplate(node.type);
+  const templateSection = template
+    ? `\nComponent contract:\n${formatTemplateForPrompt(template, language)}\n`
+    : "";
+
+  const configSchema = getComponentConfig(node.type);
+  const configSection = configSchema && node.config && Object.keys(node.config).length > 0
+    ? `\nUser-defined configuration (you MUST honour these choices exactly):\n${formatConfigForPrompt(configSchema, node.config)}\n`
+    : "";
+
   return `
 ${basePrompt}
 
@@ -175,10 +187,11 @@ Component to implement:
 
 Direct incoming relationships:
 ${relationships.incoming}
+${configSection}
 
 Direct outgoing relationships:
 ${relationships.outgoing}
-
+${templateSection}
 Implementation instructions:
 - Generate a professional implementation for this specific component only.
 - Make the component production-ready, not just syntactically correct.
@@ -188,6 +201,7 @@ Implementation instructions:
 - Keep the code maintainable, readable, and ready for integration into a larger application.
 - If configuration is needed, reference environment-driven configuration patterns.
 - If security, observability, or resilience concerns apply to this component, include them.
+- Honor the component contract above — the generated file must expose the interface and environment variables listed there.
 
 Strict output rules:
 - Return only the raw contents of a single source file.

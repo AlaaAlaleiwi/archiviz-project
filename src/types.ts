@@ -12,6 +12,8 @@ export type NodeData = {
 
   y: number;
 
+  config?: Record<string, unknown>;
+
 };
 
 export type Edge = {
