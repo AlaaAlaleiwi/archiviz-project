@@ -16,6 +16,7 @@ import { AIService } from "./services/AIService";
 import { GraphService } from "./services/GraphService";
 import { ProjectImportService } from "./services/ProjectImportService";
 import { ZipService } from "./services/ZipService";
+import { ProjectScaffoldService } from "./services/ProjectScaffoldService";
 
 import {
   buildAIPrompt,
@@ -72,38 +73,23 @@ type SavedProjectFile = {
   graph: Graph;
 };
 
-
-/* ─── localStorage helpers ─────────────────────────────────────────── */
-function lsGet<T>(key: string, fallback: T): T {
-  try {
-    const raw = localStorage.getItem(key);
-    return raw ? (JSON.parse(raw) as T) : fallback;
-  } catch {
-    return fallback;
-  }
-}
-
-function lsSet(key: string, value: unknown): void {
-  try { localStorage.setItem(key, JSON.stringify(value)); } catch {}
-}
-
 export default function App() {
   /* =======================
      STATE
   ======================= */
 
-  const [theme, setTheme] = useState<"dark" | "light">(() => lsGet("app_theme", "dark" as "dark" | "light"));
-  const [settings, setSettings] = useState<AISettings | null>(() => lsGet<AISettings | null>("ai_settings", null));
+  const [theme, setTheme] = useState<"dark" | "light">("dark");
+  const [settings, setSettings] = useState<AISettings | null>(null);
 
-  const [language, setLanguage] = useState<Language>(() => lsGet<Language>("app_language", "javascript"));
-  const [framework, setFramework] = useState<string>(() => lsGet("app_framework", "Node.js"));
+  const [language, setLanguage] = useState<Language>("javascript");
+  const [framework, setFramework] = useState("Spring Boot");
 
-  const [graph, setGraph] = useState<Graph>(() => lsGet<Graph>("app_graph", { nodes: [], edges: [] }));
+  const [graph, setGraph] = useState<Graph>({ nodes: [], edges: [] });
 
-  const [prompt, setPrompt] = useState<string>(() => lsGet("app_prompt", ""));
+  const [prompt, setPrompt] = useState("");
 
-  const [projectName, setProjectName] = useState<string>(() => lsGet("app_projectName", "architecture-app"));
-  const [buildTool, setBuildTool] = useState<string>(() => lsGet("app_buildTool", "npm"));
+  const [projectName, setProjectName] = useState("architecture-app");
+  const [buildTool, setBuildTool] = useState("npm");
   const [loading, setLoading] = useState(false);
   const [importingProject, setImportingProject] = useState(false);
   const [projectFileHandle, setProjectFileHandle] = useState<FileSystemFileHandle | null>(null);
@@ -139,6 +125,7 @@ export default function App() {
   }, [graph]);
 
   const zipService = useMemo(() => new ZipService(), []);
+  const scaffoldService = useMemo(() => new ProjectScaffoldService(), []);
   const projectImportService = useMemo(() => new ProjectImportService(), []);
 
   /* =======================
@@ -617,6 +604,57 @@ export default function App() {
   }, [buildTool, framework, graph, language, projectName, prompt, projectFileHandle]);
 
   /* =======================
+     EXPORT TO IDE ZIP
+  ======================= */
+
+  const exportProject = useCallback(async () => {
+    // 1. Collect AI-generated source files
+    const generatedFiles = Object.values(nodeCode).map(({ path, content }) => ({ path, content }));
+
+    // 2. Build scaffold (package.json, tsconfig, .gitignore, README, .vscode/, etc.)
+    const scaffoldFiles = scaffoldService.generate({
+      projectName,
+      language,
+      framework,
+      buildTool,
+      generatedFiles,
+    });
+
+    // 3. Embed the prompt as a reference file
+    const promptFile = prompt.trim()
+      ? [{ path: "arch-prompt.md", content: `# Architecture Prompt
+
+${prompt}` }]
+      : [];
+
+    // 4. Embed the .archbuilder.json so the project can be reopened in Arch Builder
+    const archFile = [{
+      path: `${projectName || "project"}.archbuilder.json`,
+      content: JSON.stringify({
+        version: 1,
+        savedAt: new Date().toISOString(),
+        projectName,
+        language,
+        framework,
+        buildTool,
+        prompt,
+        graph,
+        nodeCode,
+      }, null, 2),
+    }];
+
+    // 5. Merge all — scaffold base, then generated src, then meta files
+    const allFiles = [...scaffoldFiles, ...generatedFiles, ...promptFile, ...archFile];
+
+    // Deduplicate: later entries win (generated src overrides scaffold placeholders)
+    const fileMap = new Map<string, string>();
+    for (const f of allFiles) fileMap.set(f.path, f.content);
+    const dedupedFiles = Array.from(fileMap.entries()).map(([path, content]) => ({ path, content }));
+
+    await zipService.download(dedupedFiles, projectName);
+  }, [buildTool, framework, graph, language, nodeCode, projectName, prompt, scaffoldService, zipService]);
+
+  /* =======================
      PROMPT
   ======================= */
 
@@ -672,20 +710,6 @@ export default function App() {
     }
   };
 
-
-
-  /* =======================
-     PERSIST TO LOCALSTORAGE
-  ======================= */
-
-  useEffect(() => { lsSet("app_theme",       theme);       }, [theme]);
-  useEffect(() => { lsSet("ai_settings",     settings);    }, [settings]);
-  useEffect(() => { lsSet("app_language",    language);    }, [language]);
-  useEffect(() => { lsSet("app_framework",   framework);   }, [framework]);
-  useEffect(() => { lsSet("app_projectName", projectName); }, [projectName]);
-  useEffect(() => { lsSet("app_buildTool",   buildTool);   }, [buildTool]);
-  useEffect(() => { lsSet("app_prompt",      prompt);      }, [prompt]);
-  useEffect(() => { lsSet("app_graph",       graph);       }, [graph]);
 
   /* =======================
      CLEANUP
@@ -807,6 +831,7 @@ export default function App() {
         onOpenProject={onOpenSavedProject}
         onImportProject={onLoadProject}
         onSaveProject={saveProject}
+        onExportProject={exportProject}
       />
 
       <div className="main">
