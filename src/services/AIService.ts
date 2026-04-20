@@ -114,19 +114,53 @@ export class AIService {
   }
 
   async call(prompt: string, signal: AbortSignal): Promise<string> {
-    const res = await fetch(this.chatUrl(), {
-      method: "POST",
-      headers: this.chatHeaders(),
-      body: this.chatBody(prompt),
-      signal,
-    });
+    // Combine user abort with a 2-minute generation timeout
+    const ac = new AbortController();
+    const timer = setTimeout(
+      () => ac.abort(new DOMException("Generation timed out after 2 minutes.", "TimeoutError")),
+      120_000,
+    );
+    signal.addEventListener("abort", () => ac.abort(signal.reason), { once: true });
+
+    let res: Response;
+    try {
+      res = await fetch(this.chatUrl(), {
+        method: "POST",
+        headers: this.chatHeaders(),
+        body: this.chatBody(prompt),
+        signal: ac.signal,
+      });
+    } catch (err: any) {
+      clearTimeout(timer);
+      if (err?.name === "AbortError")   throw err;
+      if (err?.name === "TimeoutError") throw new Error("Generation timed out after 2 minutes. Try a smaller batch.");
+      throw new Error(`Network error — cannot reach ${this.isAnthropic ? "Anthropic" : this.isOpenAI ? "OpenAI" : "the local server"}: ${err?.message ?? "unknown"}`);
+    } finally {
+      clearTimeout(timer);
+    }
 
     if (!res.ok) {
-      const body = await res.json().catch(() => null);
-      throw new Error(body?.error?.message ?? await res.text());
+      const body = await res.json().catch(() => ({}));
+      const msg: string = body?.error?.message ?? body?.message ?? "";
+
+      if (res.status === 401) throw new Error("Invalid API key — check your AI settings.");
+      if (res.status === 403) throw new Error("Access denied — your API key may not have permission for this model.");
+      if (res.status === 429) {
+        const retryAfter = res.headers.get("retry-after");
+        throw new Error(`Rate limit reached.${retryAfter ? ` Retry after ${retryAfter}s.` : " Wait a moment and try again."}`);
+      }
+      if (res.status === 400 && /context|token|length/i.test(msg)) {
+        throw new Error("Prompt exceeds model context limit. Try reducing the number of nodes or switching to a larger-context model.");
+      }
+      if (res.status === 413) throw new Error("Request too large for this model.");
+      if (res.status === 503 || res.status === 529) throw new Error("AI provider is overloaded — try again in a moment.");
+      if (res.status === 500) throw new Error(`AI provider internal error (500).${msg ? " " + msg : ""}`);
+      throw new Error(msg || `AI provider returned HTTP ${res.status} ${res.statusText}.`);
     }
 
     const data = await res.json();
-    return this.parseResponse(data);
+    const result = this.parseResponse(data);
+    if (!result?.trim()) throw new Error("AI returned an empty response. Try again.");
+    return result;
   }
 }

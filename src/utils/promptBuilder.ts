@@ -1,6 +1,7 @@
 import type { Graph, Language, NodeData } from "../types";
 import { getComponentTemplate, formatTemplateForPrompt } from "./componentTemplates";
 import { getComponentConfig, formatConfigForPrompt } from "./componentConfigs";
+import { getCodeScaffold, type ScaffoldContext } from "./codeScaffolds";
 
 const FRONTEND_NODE_HINTS = [
   "frontend",
@@ -182,15 +183,58 @@ export function buildNodeImplementationPrompt(
   const filePath = getGeneratedFilePath(language, node);
   const frontendNode = isFrontendNode(node);
 
-  const template = getComponentTemplate(node.type);
-  const templateSection = template
-    ? `\nComponent contract:\n${formatTemplateForPrompt(template, language)}\n`
-    : "";
+  const scaffoldCtx: ScaffoldContext = {
+    nodeName: node.name,
+    nodeType: node.type,
+    language,
+    framework,
+    config: (node.config as Record<string, unknown>) ?? {},
+    projectName,
+  };
+  const scaffold = getCodeScaffold(scaffoldCtx);
 
   const configSchema = getComponentConfig(node.type);
   const configSection = configSchema && node.config && Object.keys(node.config).length > 0
-    ? `\nUser-defined configuration (you MUST honour these choices exactly):\n${formatConfigForPrompt(configSchema, node.config)}\n`
+    ? `\nUser-defined configuration (already applied to scaffold above — honour these choices):\n${formatConfigForPrompt(configSchema, node.config)}\n`
     : "";
+
+  const template = getComponentTemplate(node.type);
+  const contractSection = !scaffold && template
+    ? `\nComponent contract:\n${formatTemplateForPrompt(template, language)}\n`
+    : "";
+
+  if (scaffold) {
+    return `
+${basePrompt}
+
+Now complete one concrete component from the system.
+
+Component:
+- Name: ${node.name}
+- Type: ${node.type}
+- Layer: ${frontendNode ? "frontend/client" : "backend/service"}
+- Target output file: ${filePath}
+
+Direct incoming relationships:
+${relationships.incoming}
+
+Direct outgoing relationships:
+${relationships.outgoing}
+${configSection}
+A pre-built scaffold has already been generated from the user's configuration choices.
+Your job is ONLY to implement the sections marked // IMPLEMENT[n]: with real, production-quality business logic.
+Do NOT rewrite boilerplate, imports, or structure — only fill in the marked sections.
+Replace each // IMPLEMENT[n]: comment block with working code, then leave everything else exactly as-is.
+
+Pre-built scaffold (complete ONLY the IMPLEMENT sections):
+${scaffold}
+
+Strict output rules:
+- Output the completed scaffold as raw file contents — no markdown fences, no commentary.
+- Each file starts with: === FILE: <full_path> ===
+- Do not add or remove files beyond what the scaffold defines.
+`.trim();
+  }
 
   return `
 ${basePrompt}
@@ -209,7 +253,7 @@ ${configSection}
 
 Direct outgoing relationships:
 ${relationships.outgoing}
-${templateSection}
+${contractSection}
 Implementation instructions:
 - Generate a professional implementation for this specific component only.
 - Make the component production-ready, not just syntactically correct.
@@ -226,8 +270,7 @@ Strict output rules:
 - Return only the raw contents of a single source file.
 - Do not wrap the answer in markdown fences.
 - Do not include explanations, bullet lists, or extra commentary.
-- Do not generate multiple files in one response.
-- Do NOT include markdown 
+- Do NOT include markdown
 - Generate MULTIPLE FILES if needed
 - Each file must start with:
   === FILE: <full_path> ===

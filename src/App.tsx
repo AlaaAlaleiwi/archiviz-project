@@ -79,7 +79,18 @@ export default function App() {
   ======================= */
 
   const [theme, setTheme] = useState<"dark" | "light">("dark");
-  const [settings, setSettings] = useState<AISettings | null>(null);
+  const [settings, setSettings] = useState<AISettings | null>(() => {
+    try {
+      const saved = localStorage.getItem("ai_settings");
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed && typeof parsed === "object" && parsed.provider && parsed.model) {
+          return parsed as AISettings;
+        }
+      }
+    } catch { /* ignore */ }
+    return null;
+  });
 
   const [language, setLanguage] = useState<Language>("javascript");
   const [framework, setFramework] = useState("Spring Boot");
@@ -104,6 +115,7 @@ export default function App() {
   const [viewingNodeId, setViewingNodeId] = useState<string | null>(null);
   const [nodeCode, setNodeCode] = useState<Record<string, { path: string; content: string }>>({});
   const [generationProgress, setGenerationProgress] = useState<{ current: number; total: number; nodeName: string } | null>(null);
+  const [genError, setGenError] = useState<{ message: string; failedNodes?: string[] } | null>(null);
 
   const [camera, setCamera] = useState<Camera>({ x: 120, y: 72, scale: 1 });
 
@@ -677,33 +689,52 @@ ${prompt}` }]
     if (!hasPrompt) return alert("Generate or write a prompt before asking AI.");
 
     setLoading(true);
+    setGenError(null);
     const controller = new AbortController();
     abortRef.current = controller;
 
     const nodes = graphService.getNodes();
     setGenerationProgress({ current: 0, total: nodes.length, nodeName: "" });
 
-    try {
-      const files: { path: string; content: string }[] = [];
-      const newCode: Record<string, { path: string; content: string }> = {};
+    const files: { path: string; content: string }[] = [];
+    const newCode: Record<string, { path: string; content: string }> = {};
+    const failedNodes: string[] = [];
 
+    try {
       for (let i = 0; i < nodes.length; i++) {
         const node = nodes[i];
         setGenerationProgress({ current: i + 1, total: nodes.length, nodeName: node.name });
 
-        const nodePrompt = buildNodeImplementationPrompt(graph, node, language, framework, projectName);
-        const raw = await ai.call(nodePrompt, controller.signal);
-        const content = cleanAIResponse(raw);
-        const path = getGeneratedFilePath(language, node);
-
-        files.push({ path, content });
-        newCode[node.id] = { path, content };
+        try {
+          const nodePrompt = buildNodeImplementationPrompt(graph, node, language, framework, projectName);
+          const raw = await ai.call(nodePrompt, controller.signal);
+          const content = cleanAIResponse(raw);
+          const path = getGeneratedFilePath(language, node);
+          files.push({ path, content });
+          newCode[node.id] = { path, content };
+        } catch (nodeErr: any) {
+          if (nodeErr?.name === "AbortError") throw nodeErr; // bubble up — user cancelled
+          console.error(`[generate] ${node.name}:`, nodeErr);
+          failedNodes.push(node.name);
+        }
       }
 
-      setNodeCode(prev => ({ ...prev, ...newCode }));
-      await zipService.download(files, projectName);
-    } catch (err) {
-      console.error(err);
+      if (Object.keys(newCode).length > 0) {
+        setNodeCode(prev => ({ ...prev, ...newCode }));
+        await zipService.download(files, projectName);
+      }
+
+      if (failedNodes.length > 0) {
+        setGenError({
+          message: `${failedNodes.length} component${failedNodes.length > 1 ? "s" : ""} failed to generate.`,
+          failedNodes,
+        });
+      }
+    } catch (err: any) {
+      if (err?.name !== "AbortError") {
+        console.error("[generate]", err);
+        setGenError({ message: err?.message ?? "Generation failed. Check your AI settings and try again." });
+      }
     } finally {
       setLoading(false);
       setGenerationProgress(null);
@@ -921,6 +952,23 @@ ${prompt}` }]
               style={{ width: `${(generationProgress.current / generationProgress.total) * 100}%` }}
             />
           </div>
+        </div>
+      )}
+
+      {genError && (
+        <div className="gen-error-hud">
+          <div className="gen-error-header">
+            <span className="gen-error-icon">⚠</span>
+            <span className="gen-error-message">{genError.message}</span>
+            <button className="gen-error-close" onClick={() => setGenError(null)}>✕</button>
+          </div>
+          {genError.failedNodes && genError.failedNodes.length > 0 && (
+            <ul className="gen-error-nodes">
+              {genError.failedNodes.map(name => (
+                <li key={name}>{name}</li>
+              ))}
+            </ul>
+          )}
         </div>
       )}
     </div>

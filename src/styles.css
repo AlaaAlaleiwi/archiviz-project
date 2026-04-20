@@ -1910,6 +1910,82 @@ body  { background: var(--bg); color: var(--text); }
 }
 
 /* =========================
+   GENERATION ERROR HUD
+========================= */
+.gen-error-hud {
+  position: fixed;
+  bottom: 28px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 300;
+  background: var(--panel);
+  border: 1px solid rgba(239, 68, 68, 0.4);
+  border-radius: 14px;
+  padding: 14px 20px;
+  min-width: 320px;
+  max-width: 480px;
+  box-shadow: 0 20px 60px var(--shadow-color);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.gen-error-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.gen-error-icon {
+  font-size: 14px;
+  color: #f87171;
+  flex-shrink: 0;
+}
+
+.gen-error-message {
+  font-size: 12px;
+  font-weight: 600;
+  color: #f87171;
+  flex: 1;
+  line-height: 1.4;
+}
+
+.gen-error-close {
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 4px;
+  flex-shrink: 0;
+  line-height: 1;
+}
+.gen-error-close:hover { color: var(--text); }
+
+.gen-error-nodes {
+  margin: 0;
+  padding: 0 0 0 4px;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.gen-error-nodes li {
+  font-size: 11px;
+  color: var(--muted);
+  padding-left: 12px;
+  position: relative;
+}
+.gen-error-nodes li::before {
+  content: "·";
+  position: absolute;
+  left: 2px;
+  color: #f87171;
+}
+
+/* =========================
    NODE CODE VIEWER MODAL
 ========================= */
 .ncm-code-panel {

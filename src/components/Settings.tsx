@@ -81,19 +81,19 @@ export default function Settings({ onSave }: { onSave: (s: AISettings) => void }
   const [fetchingModels, setFetchingModels] = useState(false);
   const [fetchedModels, setFetchedModels] = useState<{ id: string }[]>([]);
 
-useEffect(() => {
-  const saved = localStorage.getItem("ai_settings");
-  if (saved) {
-    try {
-      const parsed = JSON.parse(saved);
-      if (parsed && typeof parsed === "object") {
-        setCfg({ ...defaultSettings, ...parsed }); // ✅ safe merge
+  useEffect(() => {
+    const saved = localStorage.getItem("ai_settings");
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (parsed && typeof parsed === "object") {
+          setCfg({ ...defaultSettings, ...parsed });
+        }
+      } catch {
+        console.warn("Invalid ai_settings in localStorage");
       }
-    } catch {
-      console.warn("Invalid ai_settings in localStorage");
     }
-  }
-}, []);
+  }, []);
 
   const update = (patch: Partial<AISettings>) => {
     setCfg(s => ({ ...s, ...patch }));
