@@ -6,7 +6,7 @@ const JAVA_VERSIONS: JavaVersion[]        = ["17", "21", "25"];
 const SPRING_VERSIONS: SpringBootVersion[] = ["3.2", "3.3", "3.4"];
 const BUILD_TOOLS: BuildTool[]             = ["maven", "gradle"];
 
-type JavaProjectConfig = {
+export type JavaProjectConfig = {
   projectName:       string;
   javaVersion:       JavaVersion;
   springBootVersion: SpringBootVersion;
@@ -98,7 +98,7 @@ function UnsavedChangesModal({
 /* ─────────────────────────────────────────
    PROJECT CONFIG MODAL (Java-only)
 ───────────────────────────────────────── */
-function ProjectConfigModal({
+export function ProjectConfigModal({
   initial,
   title = "New Project",
   confirmLabel = "Create Project →",
@@ -202,10 +202,7 @@ function ProjectConfigModal({
 ───────────────────────────────────────── */
 interface TopbarProps {
   generate: () => void;
-  askAI: () => void;
-  loading: boolean;
   canGenerate: boolean;
-  canAskAI: boolean;
   canSaveProject: boolean;
   hasUnsavedChanges?: boolean;
   importingProject?: boolean;
@@ -220,7 +217,6 @@ interface TopbarProps {
   buildTool: BuildTool;
   setBuildTool: (t: BuildTool) => void;
   onOpenSettings: () => void;
-  onCancel: () => void;
   onCreateProject: () => void;
   onOpenProject: () => void;
   onImportProject: () => void;
@@ -230,15 +226,15 @@ interface TopbarProps {
 }
 
 export default function Topbar({
-  generate, askAI, loading,
-  canGenerate, canAskAI, canSaveProject,
+  generate,
+  canGenerate, canSaveProject,
   hasUnsavedChanges, importingProject,
   theme, setTheme,
   javaVersion, setJavaVersion,
   springBootVersion, setSpringBootVersion,
   projectName, setProjectName,
   buildTool, setBuildTool,
-  onOpenSettings, onCancel,
+  onOpenSettings,
   onCreateProject, onOpenProject, onImportProject,
   onSaveProject, onExportProject,
   onLogout,
@@ -334,12 +330,6 @@ export default function Topbar({
           <button className="btn" onClick={generate} disabled={!canGenerate}>
             Generate Prompt
           </button>
-
-          {loading ? (
-            <button className="btn btn-danger" onClick={onCancel}>Stop</button>
-          ) : (
-            <button className="btn btn-primary" onClick={askAI} disabled={!canAskAI}>Ask AI</button>
-          )}
 
           <button className="btn" onClick={onOpenSettings} title="Settings">Settings</button>
 

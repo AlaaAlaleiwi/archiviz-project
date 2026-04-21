@@ -5,25 +5,22 @@ import { saveAs } from "file-saver";
 import Palette from "./components/Palette";
 import Canvas from "./components/Canvas";
 import CodePanel from "./components/CodePanel";
-import Topbar from "./components/Topbar";
+import FileWorkspace, { type WorkspaceFile } from "./components/FileWorkspace";
+import Topbar, { ProjectConfigModal, type JavaProjectConfig } from "./components/Topbar";
 import Settings, { type AISettings } from "./components/Settings";
 import NodeConfigModal from "./components/NodeConfigModal";
 import NodeCodeModal from "./components/NodeCodeModal";
 import ChatPanel from "./components/ChatPanel";
+import TerminalDock from "./components/TerminalDock";
 
 import type { Graph, NodeType, Camera, Language, NodeData, Edge, JavaVersion, SpringBootVersion, BuildTool } from "./types";
 
 import { AIService } from "./services/AIService";
-import { GraphService } from "./services/GraphService";
 import { ProjectImportService } from "./services/ProjectImportService";
 import { ZipService } from "./services/ZipService";
 import { ProjectScaffoldService } from "./services/ProjectScaffoldService";
 
-import {
-  buildAIPrompt,
-  buildNodeImplementationPrompt,
-  getGeneratedFilePath,
-} from "./utils/promptBuilder";
+import { buildAIPrompt } from "./utils/promptBuilder";
 import { parseMultiFileResponse } from "./utils/stringUtils";
 
 const genId = () => Math.random().toString(36).slice(2, 10);
@@ -55,6 +52,32 @@ const MIN_SCALE = 0.5;
 const MAX_SCALE = 2.4;
 const ZOOM_STEP = 1.14;
 
+const dedupeFiles = (files: WorkspaceFile[]) => {
+  const fileMap = new Map<string, string>();
+  for (const file of files) fileMap.set(file.path, file.content);
+  return Array.from(fileMap.entries()).map(([path, content]) => ({ path, content }));
+};
+
+const isHiddenWorkspacePlaceholder = (path: string) => path.split("/").pop() === ".gitkeep";
+
+const hasWorkspacePath = (files: WorkspaceFile[], path: string) => files.some(file => file.path === path);
+
+const getBuildCommand = (files: WorkspaceFile[], buildTool: BuildTool) => {
+  if (buildTool === "gradle" || hasWorkspacePath(files, "build.gradle") || hasWorkspacePath(files, "build.gradle.kts")) {
+    return hasWorkspacePath(files, "gradlew") ? "chmod +x ./gradlew && ./gradlew build" : "gradle build";
+  }
+
+  return hasWorkspacePath(files, "mvnw") ? "chmod +x ./mvnw && ./mvnw clean package" : "mvn clean package";
+};
+
+const getRunCommand = (files: WorkspaceFile[], buildTool: BuildTool) => {
+  if (buildTool === "gradle" || hasWorkspacePath(files, "build.gradle") || hasWorkspacePath(files, "build.gradle.kts")) {
+    return hasWorkspacePath(files, "gradlew") ? "chmod +x ./gradlew && ./gradlew bootRun" : "gradle bootRun";
+  }
+
+  return hasWorkspacePath(files, "mvnw") ? "chmod +x ./mvnw && ./mvnw spring-boot:run" : "mvn spring-boot:run";
+};
+
 type SavedProjectFile = {
   version: 1;
   savedAt: string;
@@ -64,6 +87,8 @@ type SavedProjectFile = {
   buildTool: BuildTool;
   prompt: string;
   graph: Graph;
+  nodeCode?: Record<string, WorkspaceFile[]>;
+  workspaceFiles?: WorkspaceFile[];
 };
 
 export default function App() {
@@ -95,9 +120,10 @@ export default function App() {
   const [prompt, setPrompt] = useState("");
 
   const [projectName, setProjectName] = useState("architecture-app");
-  const [loading, setLoading] = useState(false);
   const [importingProject, setImportingProject] = useState(false);
   const [projectFileHandle, setProjectFileHandle] = useState<FileSystemFileHandle | null>(null);
+  const [activeProjectStarted, setActiveProjectStarted] = useState(false);
+  const [showStartupProjectConfig, setShowStartupProjectConfig] = useState(false);
 
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
@@ -111,13 +137,18 @@ export default function App() {
   const [configuringNodeId, setConfiguringNodeId] = useState<string | null>(null);
   const [viewingNodeId, setViewingNodeId] = useState<string | null>(null);
   const [nodeCode, setNodeCode] = useState<Record<string, { path: string; content: string }[]>>({});
-  const [generationProgress, setGenerationProgress] = useState<{ current: number; total: number; nodeName: string; streamText: string } | null>(null);
+  const [workspaceFiles, setWorkspaceFiles] = useState<WorkspaceFile[]>([]);
+  const [activeWorkspacePath, setActiveWorkspacePath] = useState<string | null>(null);
+  const [workspaceView, setWorkspaceView] = useState<"canvas" | "editor">("canvas");
+  const [projectGenerating, setProjectGenerating] = useState(false);
+  const [runnerBusy, setRunnerBusy] = useState(false);
   const [genError, setGenError] = useState<{ message: string; failedNodes?: string[] } | null>(null);
 
   const [camera, setCamera] = useState<Camera>({ x: 120, y: 72, scale: 1 });
 
   const canvasRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const projectGenerationInFlightRef = useRef(false);
   const folderInputRef = useRef<HTMLInputElement>(null);
   const projectFileInputRef = useRef<HTMLInputElement>(null);
 
@@ -128,10 +159,6 @@ export default function App() {
   const ai = useMemo(() => {
     return settings ? new AIService(settings) : null;
   }, [settings]);
-
-  const graphService = useMemo(() => {
-    return new GraphService(graph);
-  }, [graph]);
 
   const zipService = useMemo(() => new ZipService(), []);
   const scaffoldService = useMemo(() => new ProjectScaffoldService(), []);
@@ -439,6 +466,10 @@ export default function App() {
     setDrag(null);
     setPan(null);
     setPrompt("");
+    setNodeCode({});
+    setWorkspaceFiles([]);
+    setActiveWorkspacePath(null);
+    setWorkspaceView("canvas");
     setCamera({ x: 120, y: 72, scale: 1 });
   }, []);
 
@@ -456,7 +487,20 @@ export default function App() {
     setPan(null);
     setCamera({ x: 120, y: 72, scale: 1 });
     setProjectFileHandle(null);
+    setNodeCode({});
+    setWorkspaceFiles([]);
+    setActiveWorkspacePath(null);
+    setWorkspaceView("canvas");
   }, []);
+
+  const createConfiguredProject = useCallback((cfg: JavaProjectConfig) => {
+    createNewProject();
+    setProjectName(cfg.projectName);
+    setJavaVersion(cfg.javaVersion);
+    setSpringBootVersion(cfg.springBootVersion);
+    setBuildTool(cfg.buildTool);
+    setActiveProjectStarted(true);
+  }, [createNewProject]);
 
   const applyProjectData = useCallback((parsed: SavedProjectFile) => {
     setProjectName(parsed.projectName);
@@ -471,6 +515,11 @@ export default function App() {
     setDrag(null);
     setPan(null);
     setCamera({ x: 120, y: 72, scale: 1 });
+    setNodeCode(parsed.nodeCode ?? {});
+    const restoredFiles = parsed.workspaceFiles ?? Object.values(parsed.nodeCode ?? {}).flat();
+    setWorkspaceFiles(restoredFiles);
+    setActiveWorkspacePath(restoredFiles[0]?.path ?? null);
+    setWorkspaceView(restoredFiles.length > 0 ? "editor" : "canvas");
   }, []);
 
   const validateProjectData = (parsed: Partial<SavedProjectFile>): parsed is SavedProjectFile => (
@@ -501,6 +550,7 @@ export default function App() {
         if (!validateProjectData(parsed)) throw new Error("Invalid project file");
         applyProjectData(parsed);
         setProjectFileHandle(handle);
+        setActiveProjectStarted(true);
       } catch (err: any) {
         if (err.name !== "AbortError") {
           console.error(err);
@@ -538,6 +588,7 @@ export default function App() {
           )
         );
         setCamera({ x: 120, y: 72, scale: 1 });
+        setWorkspaceView("canvas");
       } catch (error) {
         console.error(error);
       } finally {
@@ -556,6 +607,8 @@ export default function App() {
       const parsed = JSON.parse(await file.text()) as Partial<SavedProjectFile>;
       if (!validateProjectData(parsed)) throw new Error("Invalid project file");
       applyProjectData(parsed);
+      setProjectFileHandle(null);
+      setActiveProjectStarted(true);
     } catch (error) {
       console.error(error);
       alert("Could not open this project file.");
@@ -574,6 +627,8 @@ export default function App() {
       buildTool,
       prompt,
       graph,
+      nodeCode,
+      workspaceFiles,
     };
     const json = JSON.stringify(payload, null, 2);
 
@@ -606,7 +661,7 @@ export default function App() {
 
     // Fallback for browsers without File System Access API
     saveAs(new Blob([json], { type: "application/json;charset=utf-8" }), `${projectName || "project"}.archbuilder.json`);
-  }, [buildTool, javaVersion, springBootVersion, graph, projectName, prompt, projectFileHandle]);
+  }, [buildTool, javaVersion, springBootVersion, graph, nodeCode, projectName, prompt, projectFileHandle, workspaceFiles]);
 
   /* =======================
      EXPORT TO IDE ZIP
@@ -614,7 +669,7 @@ export default function App() {
 
   const exportProject = useCallback(async () => {
     // 1. Collect AI-generated source files (each node now stores an array of files)
-    const generatedFiles = Object.values(nodeCode).flat();
+    const generatedFiles = workspaceFiles.length > 0 ? workspaceFiles : Object.values(nodeCode).flat();
 
     // 2. Build scaffold (pom.xml/build.gradle, Dockerfile, docker-compose, Terraform, etc.)
     const scaffoldFiles = scaffoldService.generate({
@@ -643,6 +698,7 @@ export default function App() {
         prompt,
         graph,
         nodeCode,
+        workspaceFiles,
       }, null, 2),
     }];
 
@@ -655,7 +711,62 @@ export default function App() {
     const dedupedFiles = Array.from(fileMap.entries()).map(([path, content]) => ({ path, content }));
 
     await zipService.download(dedupedFiles, projectName);
-  }, [buildTool, javaVersion, springBootVersion, graph, nodeCode, projectName, prompt, scaffoldService, zipService]);
+  }, [buildTool, javaVersion, springBootVersion, graph, nodeCode, projectName, prompt, scaffoldService, workspaceFiles, zipService]);
+
+  const getRunnableProjectFiles = useCallback(() => {
+    const generatedFiles = (workspaceFiles.length > 0 ? workspaceFiles : Object.values(nodeCode).flat())
+      .filter(file => !isHiddenWorkspacePlaceholder(file.path));
+
+    if (generatedFiles.length === 0) return [];
+
+    const scaffoldFiles = scaffoldService.generate({
+      projectName,
+      javaVersion,
+      springBootVersion,
+      buildTool,
+      generatedFiles,
+    });
+
+    return dedupeFiles([...scaffoldFiles, ...generatedFiles]);
+  }, [buildTool, javaVersion, nodeCode, projectName, scaffoldService, springBootVersion, workspaceFiles]);
+
+  const runProjectCommand = useCallback(async (mode: "build" | "run") => {
+    if (!window.electronAPI?.materializeWorkspace) {
+      alert("Build and Run are available in the Electron desktop app.");
+      return;
+    }
+
+    const runnableFiles = getRunnableProjectFiles();
+    if (runnableFiles.length === 0) {
+      alert("Generate or create project files before building.");
+      return;
+    }
+
+    setRunnerBusy(true);
+
+    try {
+      const { cwd } = await window.electronAPI.materializeWorkspace({
+        projectName,
+        files: runnableFiles,
+      });
+      const command = mode === "build"
+        ? getBuildCommand(runnableFiles, buildTool)
+        : getRunCommand(runnableFiles, buildTool);
+
+      window.dispatchEvent(new CustomEvent("archiviz:terminal-command", {
+        detail: {
+          cwd,
+          title: mode === "build" ? "Build" : "Run",
+          command,
+        },
+      }));
+    } catch (error: any) {
+      console.error("[runner]", error);
+      alert(error?.message ?? "Could not start the project runner.");
+    } finally {
+      setRunnerBusy(false);
+    }
+  }, [buildTool, getRunnableProjectFiles, projectName]);
 
   /* =======================
      PROMPT
@@ -671,78 +782,62 @@ export default function App() {
     setPrompt(p);
   };
 
-  /* =======================
-     ASK AI (ZIP GENERATION)
-  ======================= */
+  const generateProjectWithAI = useCallback(async () => {
+    if (projectGenerationInFlightRef.current) return;
 
-  const askAI = async () => {
-    if (!settings || !ai) return alert("Configure AI first");
-    if (!hasPrompt) return alert("Generate or write a prompt before asking AI.");
+    if (!settings || !ai) {
+      alert("Configure AI first");
+      return;
+    }
 
-    setLoading(true);
+    let sourcePrompt = prompt.trim();
+    if (!sourcePrompt && hasCanvasContent) {
+      sourcePrompt = buildAIPrompt(graph, javaVersion, springBootVersion, projectName);
+      setPrompt(sourcePrompt);
+    }
+
+    if (!sourcePrompt) {
+      alert("Write a prompt or add nodes before generating a project.");
+      return;
+    }
+
+    setProjectGenerating(true);
+    projectGenerationInFlightRef.current = true;
     setGenError(null);
     const controller = new AbortController();
     abortRef.current = controller;
 
-    const nodes = graphService.getNodes();
-    setGenerationProgress({ current: 0, total: nodes.length, nodeName: "" });
-
-    const allFiles: { path: string; content: string }[] = [];
-    const newCode: Record<string, { path: string; content: string }[]> = {};
-    const failedNodes: string[] = [];
-
     try {
-      for (let i = 0; i < nodes.length; i++) {
-        const node = nodes[i];
-        setGenerationProgress({ current: i + 1, total: nodes.length, nodeName: node.name, streamText: "" });
+      const projectPrompt = [
+        `Generate a complete ${buildTool} Java ${javaVersion} Spring Boot ${springBootVersion} project named "${projectName || "architecture-app"}".`,
+        "Return multiple files only with this exact marker before each file:",
+        "=== FILE: path/to/file.ext ===",
+        "Include build files, application entrypoint, configuration, and implementation files needed for the described architecture.",
+        "Do not wrap the answer in Markdown fences.",
+        "",
+        sourcePrompt,
+      ].join("\n");
 
-        try {
-          let raw = "";
+      const raw = await ai.callStream(
+        [{ role: "user", content: projectPrompt }],
+        () => {},
+        controller.signal
+      );
+      const files = dedupeFiles(parseMultiFileResponse(raw, "README.md"));
 
-          const nodePrompt = buildNodeImplementationPrompt(graph, node, javaVersion, springBootVersion, projectName, buildTool);
-          raw = await ai.callStream(
-            [{ role: "user", content: nodePrompt }],
-            (token) => {
-              setGenerationProgress(prev =>
-                prev ? { ...prev, streamText: prev.streamText + token } : prev
-              );
-            },
-            controller.signal
-          );
-
-          const fallbackPath = getGeneratedFilePath(node, projectName);
-          const nodeFiles = parseMultiFileResponse(raw, fallbackPath);
-          allFiles.push(...nodeFiles);
-          newCode[node.id] = nodeFiles;
-          setNodeCode(prev => ({ ...prev, [node.id]: nodeFiles }));
-        } catch (nodeErr: any) {
-          if (nodeErr?.name === "AbortError") throw nodeErr;
-          console.error(`[generate] ${node.name}:`, nodeErr);
-          failedNodes.push(node.name);
-        }
-      }
-
-      if (Object.keys(newCode).length > 0) {
-        await zipService.download(allFiles, projectName);
-      }
-
-      if (failedNodes.length > 0) {
-        setGenError({
-          message: `${failedNodes.length} component${failedNodes.length > 1 ? "s" : ""} failed to generate.`,
-          failedNodes,
-        });
-      }
+      setWorkspaceFiles(files);
+      setActiveWorkspacePath(files[0]?.path ?? null);
+      setWorkspaceView("editor");
     } catch (err: any) {
       if (err?.name !== "AbortError") {
-        console.error("[generate]", err);
-        setGenError({ message: err?.message ?? "Generation failed. Check your AI settings and try again." });
+        console.error("[project-generator]", err);
+        setGenError({ message: err?.message ?? "Project generation failed. Check your AI settings and try again." });
       }
     } finally {
-      setLoading(false);
-      setGenerationProgress(null);
+      projectGenerationInFlightRef.current = false;
+      setProjectGenerating(false);
     }
-  };
-
+  }, [ai, buildTool, graph, hasCanvasContent, javaVersion, projectName, prompt, settings, springBootVersion]);
 
   /* =======================
      CLEANUP
@@ -837,12 +932,37 @@ export default function App() {
         onChange={onSavedProjectSelected}
       />
 
+      {!activeProjectStarted && (
+        <div className="startup-overlay" role="dialog" aria-modal="true" aria-labelledby="startup-title">
+          <div className="startup-panel">
+            <div className="startup-brand">ARCH</div>
+            <div className="startup-copy">
+              <h1 id="startup-title">Choose a project</h1>
+              <p>Open a saved architecture workspace or create a fresh Spring Boot project.</p>
+            </div>
+            <div className="startup-actions">
+              <button className="btn btn-primary startup-action" onClick={() => setShowStartupProjectConfig(true)}>
+                Create New Project
+              </button>
+              <button className="btn startup-action" onClick={onOpenSavedProject}>
+                Open Project
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showStartupProjectConfig && (
+        <ProjectConfigModal
+          initial={{ projectName: "", javaVersion, springBootVersion, buildTool }}
+          onConfirm={createConfiguredProject}
+          onClose={() => setShowStartupProjectConfig(false)}
+        />
+      )}
+
       <Topbar
         generate={generate}
-        askAI={askAI}
-        loading={loading}
         canGenerate={hasCanvasContent}
-        canAskAI={hasPrompt}
         canSaveProject={hasProjectData}
         importingProject={importingProject}
         theme={theme}
@@ -856,7 +976,6 @@ export default function App() {
         buildTool={buildTool}
         setBuildTool={setBuildTool}
         onOpenSettings={() => setShowSettings(true)}
-        onCancel={() => abortRef.current?.abort()}
         onCreateProject={createNewProject}
         onOpenProject={onOpenSavedProject}
         onImportProject={onLoadProject}
@@ -865,36 +984,90 @@ export default function App() {
       />
 
       <div className="main">
-        <Palette />
+        <div className="workspace-shell">
+          <nav className="workspace-rail" aria-label="Workspace views">
+            <button
+              className={`workspace-rail-btn ${workspaceView === "canvas" ? "active" : ""}`}
+              onClick={() => setWorkspaceView("canvas")}
+              title="Components"
+              aria-label="Components"
+              aria-pressed={workspaceView === "canvas"}
+            >
+              <span className="workspace-rail-icon">C</span>
+              <span className="workspace-rail-label">Components</span>
+            </button>
+            <button
+              className={`workspace-rail-btn ${workspaceView === "editor" ? "active" : ""}`}
+              onClick={() => setWorkspaceView("editor")}
+              title="Code editor"
+              aria-label="Code editor"
+              aria-pressed={workspaceView === "editor"}
+            >
+              <span className="workspace-rail-icon">E</span>
+              <span className="workspace-rail-label">Editor</span>
+            </button>
+          </nav>
 
-        <Canvas
-          canvasRef={canvasRef}
-          graph={graph}
-          camera={camera}
-          selectedIds={selectedIds}
-          selectedEdgeId={selectedEdgeId}
-          wire={wire}
-          onDrop={onDrop}
-          onDragOver={onDragOver}
-          onDelete={onDelete}
-          onRename={onRename}
-          onConfigure={setConfiguringNodeId}
-          onViewCode={setViewingNodeId}
-          generatedNodeIds={new Set(Object.keys(nodeCode))}
-          startWire={startWire}
-          moveWire={movePointerInteraction}
-          onNodePointerDown={onNodePointerDown}
-          onEdgePointerDown={onEdgePointerDown}
-          onCanvasPointerDown={onCanvasPointerDown}
-          onCanvasWheel={onCanvasWheel}
-          onZoomIn={zoomIn}
-          onZoomOut={zoomOut}
-          onResetCamera={resetCamera}
-          onClearCanvas={clearCanvas}
+          {workspaceView === "canvas" && (
+            <aside className="workspace-side-pane">
+              <Palette embedded />
+            </aside>
+          )}
+
+          <div className="workspace-main">
+            {workspaceView === "canvas" ? (
+              <Canvas
+                canvasRef={canvasRef}
+                graph={graph}
+                camera={camera}
+                selectedIds={selectedIds}
+                selectedEdgeId={selectedEdgeId}
+                wire={wire}
+                onDrop={onDrop}
+                onDragOver={onDragOver}
+                onDelete={onDelete}
+                onRename={onRename}
+                onConfigure={setConfiguringNodeId}
+                onViewCode={setViewingNodeId}
+                generatedNodeIds={new Set(Object.keys(nodeCode))}
+                startWire={startWire}
+                moveWire={movePointerInteraction}
+                onNodePointerDown={onNodePointerDown}
+                onEdgePointerDown={onEdgePointerDown}
+                onCanvasPointerDown={onCanvasPointerDown}
+                onCanvasWheel={onCanvasWheel}
+                onZoomIn={zoomIn}
+                onZoomOut={zoomOut}
+                onResetCamera={resetCamera}
+                onClearCanvas={clearCanvas}
+              />
+            ) : (
+              <FileWorkspace
+                files={workspaceFiles}
+                activePath={activeWorkspacePath}
+                onActivePathChange={setActiveWorkspacePath}
+                onFilesChange={setWorkspaceFiles}
+                editorTheme={theme}
+                onBuildProject={() => void runProjectCommand("build")}
+                onRunProject={() => void runProjectCommand("run")}
+                runnerBusy={runnerBusy}
+              />
+            )}
+          </div>
+        </div>
+
+        <CodePanel
+          prompt={prompt}
+          setPrompt={setPrompt}
+          filesCount={workspaceFiles.length}
+          onGenerateProject={generateProjectWithAI}
+          onOpenEditor={() => setWorkspaceView("editor")}
+          aiGenerating={projectGenerating}
+          canGenerateProject={!!settings && (hasPrompt || hasCanvasContent)}
         />
-
-        <CodePanel prompt={prompt} setPrompt={setPrompt} />
       </div>
+
+      <TerminalDock />
 
       {showSettings && (
         <div className="modal" onClick={() => setShowSettings(false)}>
@@ -931,35 +1104,14 @@ export default function App() {
             nodeType={node.type}
             files={files}
             onClose={() => setViewingNodeId(null)}
-            onSave={(updatedFiles) =>
-              setNodeCode(prev => ({ ...prev, [viewingNodeId]: updatedFiles }))
-            }
+            onSave={(updatedFiles) => {
+              setNodeCode(prev => ({ ...prev, [viewingNodeId]: updatedFiles }));
+              setWorkspaceFiles(prev => dedupeFiles([...prev, ...updatedFiles]));
+              setActiveWorkspacePath(updatedFiles[0]?.path ?? activeWorkspacePath);
+            }}
           />
         ) : null;
       })()}
-
-      {generationProgress && (
-        <div className="gen-progress-hud">
-          <div className="gen-progress-header">
-            <span className="gen-progress-label">Generating code…</span>
-            <span className="gen-progress-count">
-              {generationProgress.current} / {generationProgress.total}
-            </span>
-          </div>
-          <div className="gen-progress-node">{generationProgress.nodeName}</div>
-          <div className="gen-progress-bar-track">
-            <div
-              className="gen-progress-bar-fill"
-              style={{ width: `${(generationProgress.current / generationProgress.total) * 100}%` }}
-            />
-          </div>
-          {generationProgress.streamText && (
-            <pre className="gen-progress-stream">
-              {generationProgress.streamText.slice(-800)}
-            </pre>
-          )}
-        </div>
-      )}
 
       {/* Floating chat button — visible when chat is closed or minimized */}
       {(!showChat || chatMinimized) && (

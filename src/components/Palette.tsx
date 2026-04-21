@@ -41,7 +41,11 @@ const catalog: Item[] = [
   { type: "tracing_service",    label: "Tracing Service",      icon: "🧭", desc: "Distributed tracing and observability" },
 ];
 
-export default function Palette() {
+type PaletteProps = {
+  embedded?: boolean;
+};
+
+export default function Palette({ embedded = false }: PaletteProps) {
   const [isOpen, setIsOpen] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
   const [newItem, setNewItem] = useState({ label: "", icon: "⚙️", desc: "" });
@@ -69,16 +73,18 @@ export default function Palette() {
   };
 
   return (
-    <div className={`palette${isOpen ? "" : " palette--collapsed"}`}>
+    <div className={`palette${embedded ? " palette--embedded" : ""}${isOpen ? "" : " palette--collapsed"}`}>
       <div className="paletteHeaderRow">
         {isOpen && <div className="paletteHeader">COMPONENTS</div>}
-        <button
-          className="panelCollapseBtn"
-          onClick={() => setIsOpen(!isOpen)}
-          title={isOpen ? "Collapse panel" : "Expand panel"}
-        >
-          {isOpen ? "‹" : "›"}
-        </button>
+        {!embedded && (
+          <button
+            className="panelCollapseBtn"
+            onClick={() => setIsOpen(!isOpen)}
+            title={isOpen ? "Collapse panel" : "Expand panel"}
+          >
+            {isOpen ? "‹" : "›"}
+          </button>
+        )}
       </div>
 
       {isOpen && (
