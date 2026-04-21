@@ -24,9 +24,10 @@ const ANTHROPIC_MODELS = [
 ];
 
 const PROVIDERS: { id: AIProvider; label: string; icon: string }[] = [
-  { id: "openai",    label: "OpenAI",   icon: "🤖" },
-  { id: "anthropic", label: "Claude",   icon: "🧠" },
-  { id: "local",     label: "Local",    icon: "🖥️" },
+  { id: "openai",       label: "OpenAI",      icon: "🤖" },
+  { id: "anthropic",    label: "Claude",      icon: "🧠" },
+  { id: "local",        label: "Local",       icon: "🖥️" },
+  { id: "spring-boot",  label: "Spring Boot", icon: "🌿" },
 ];
 
 const defaultSettings: AISettings = {
@@ -102,7 +103,10 @@ export default function Settings({ onSave }: { onSave: (s: AISettings) => void }
   };
 
   const handleProviderChange = (p: AIProvider) => {
-    setCfg(s => ({ ...s, provider: p, model: "" }));
+    const baseUrl = p === "spring-boot" ? "http://localhost:8080"
+      : p === "local" ? "http://localhost:1234"
+      : "";
+    setCfg(s => ({ ...s, provider: p, model: "", baseUrl: baseUrl || s.baseUrl }));
     setFetchedModels([]);
     setTestResult(null);
     setError(null);
@@ -110,7 +114,7 @@ export default function Settings({ onSave }: { onSave: (s: AISettings) => void }
 
   /* ── Test connection ── */
   const testConnection = async () => {
-    if (!cfg.model.trim()) { setError("Select or enter a model first."); return; }
+    if (cfg.provider !== "spring-boot" && !cfg.model.trim()) { setError("Select or enter a model first."); return; }
     if ((cfg.provider === "openai" || cfg.provider === "anthropic") && !cfg.apiKey.trim()) {
       setError("Enter your API key first."); return;
     }
@@ -158,7 +162,7 @@ export default function Settings({ onSave }: { onSave: (s: AISettings) => void }
   };
 
   const save = () => {
-    if (!cfg.model.trim()) { setError("Please select or enter a model."); return; }
+    if (cfg.provider !== "spring-boot" && !cfg.model.trim()) { setError("Please select or enter a model."); return; }
     if ((cfg.provider === "openai" || cfg.provider === "anthropic") && !cfg.apiKey.trim()) {
       setError("Please enter your API key."); return;
     }
@@ -174,7 +178,7 @@ export default function Settings({ onSave }: { onSave: (s: AISettings) => void }
 
       {/* Provider */}
       <label style={label}>Provider</label>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 8 }}>
         {PROVIDERS.map(p => (
           <button key={p.id} onClick={() => handleProviderChange(p.id)} style={{
             padding: "10px 8px", borderRadius: 10, fontWeight: 700, fontSize: 12, cursor: "pointer",
@@ -249,6 +253,27 @@ export default function Settings({ onSave }: { onSave: (s: AISettings) => void }
           <small style={{ color: "var(--muted)", fontSize: 11, marginTop: 4, display: "block" }}>
             Copy the model identifier exactly as shown in LM Studio's loaded model list.
           </small>
+        </>
+      )}
+
+      {/* Spring Boot */}
+      {cfg.provider === "spring-boot" && (
+        <>
+          <label style={label}>Spring Boot Base URL</label>
+          <input className="input" value={cfg.baseUrl}
+            onChange={e => update({ baseUrl: e.target.value.replace(/\/$/, "") })}
+            placeholder="http://localhost:8080" />
+          <small style={{ color: "var(--muted)", fontSize: 11, marginTop: 4, display: "block" }}>
+            Calls <code style={{ color: "var(--accent)" }}>POST /api/ai/chat</code> on your Spring Boot server.
+          </small>
+          <label style={{ ...label, marginTop: 12 }}>Model <span style={{ fontWeight: 400, textTransform: "none", fontSize: 10 }}>(optional — overrides server default)</span></label>
+          <input className="input" value={cfg.model} onChange={e => update({ model: e.target.value })}
+            placeholder="e.g. llama3 (leave blank to use server default)" />
+          <label style={{ ...label, marginTop: 12 }}>System Prompt <span style={{ fontWeight: 400, textTransform: "none", fontSize: 10 }}>(optional)</span></label>
+          <textarea className="input" value={cfg.systemPrompt ?? ""} rows={3}
+            onChange={e => update({ systemPrompt: e.target.value })}
+            placeholder="Leave blank to use the server default prompt"
+            style={{ resize: "vertical", fontFamily: "inherit", fontSize: 12 }} />
         </>
       )}
 

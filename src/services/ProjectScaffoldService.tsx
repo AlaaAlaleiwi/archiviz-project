@@ -1,495 +1,1014 @@
-import type { Language } from "../types";
+import type { JavaVersion, SpringBootVersion, BuildTool } from "../types";
 
 export type ScaffoldFile = { path: string; content: string };
 
 interface ScaffoldOptions {
   projectName: string;
-  language: Language;
-  framework: string;
-  buildTool: string;
+  javaVersion: JavaVersion;
+  springBootVersion: SpringBootVersion;
+  buildTool: BuildTool;
   generatedFiles: ScaffoldFile[];
 }
 
+const SPRING_BOOT_PATCH: Record<SpringBootVersion, string> = {
+  "3.2": "3.2.10",
+  "3.3": "3.3.6",
+  "3.4": "3.4.2",
+};
+
+const DEPENDENCY_MGMT_VERSION = "1.1.7";
+
 export class ProjectScaffoldService {
   generate(opts: ScaffoldOptions): ScaffoldFile[] {
-    const files: ScaffoldFile[] = [];
-
-    // Core scaffold per language
-    switch (opts.language) {
-      case "javascript":
-      case "typescript":
-        files.push(...this.nodeScaffold(opts));
-        break;
-      case "python":
-        files.push(...this.pythonScaffold(opts));
-        break;
-      case "java":
-        files.push(...this.javaScaffold(opts));
-        break;
-      case "cpp":
-        files.push(...this.cppScaffold(opts));
-        break;
-    }
-
-    // Universal files
-    files.push(this.gitignore(opts.language));
-    files.push(this.readme(opts));
-    files.push(this.editorconfig());
-    files.push(this.vscodeSettings(opts));
-    files.push(this.vscodeExtensions(opts));
-
-    return files;
-  }
-
-  // ─── Node.js / TypeScript ────────────────────────────────────────────────
-
-  private nodeScaffold(opts: ScaffoldOptions): ScaffoldFile[] {
-    const { projectName, language, framework, buildTool, generatedFiles } = opts;
-    const isTS = language === "typescript";
-    const isReact = ["React", "Next.js", "Vue", "Angular"].some(f => framework.includes(f));
-    const srcFiles = generatedFiles.map(f => f.path);
-
-    const deps: Record<string, string> = {};
-    const devDeps: Record<string, string> = {};
-    const scripts: Record<string, string> = {};
-
-    // Base runtime deps by framework
-    if (framework === "Express" || framework === "Node.js") {
-      deps["express"] = "^4.18.2";
-      deps["cors"] = "^2.8.5";
-      deps["dotenv"] = "^16.4.5";
-      if (isTS) {
-        devDeps["@types/express"] = "^4.17.21";
-        devDeps["@types/cors"] = "^2.8.17";
-        devDeps["@types/node"] = "^20.12.7";
-      }
-    }
-    if (framework === "NestJS") {
-      deps["@nestjs/common"] = "^10.3.8";
-      deps["@nestjs/core"] = "^10.3.8";
-      deps["@nestjs/platform-express"] = "^10.3.8";
-      deps["reflect-metadata"] = "^0.2.2";
-      deps["rxjs"] = "^7.8.1";
-      devDeps["@nestjs/cli"] = "^10.3.2";
-      devDeps["@nestjs/schematics"] = "^10.1.1";
-      devDeps["@types/node"] = "^20.12.7";
-    }
-    if (framework === "React") {
-      deps["react"] = "^18.3.1";
-      deps["react-dom"] = "^18.3.1";
-      if (isTS) {
-        devDeps["@types/react"] = "^18.3.1";
-        devDeps["@types/react-dom"] = "^18.3.0";
-      }
-      devDeps["vite"] = "^5.2.11";
-      devDeps["@vitejs/plugin-react"] = "^4.2.1";
-    }
-    if (framework === "Next.js") {
-      deps["next"] = "^14.2.3";
-      deps["react"] = "^18.3.1";
-      deps["react-dom"] = "^18.3.1";
-      if (isTS) {
-        devDeps["@types/react"] = "^18.3.1";
-        devDeps["@types/react-dom"] = "^18.3.0";
-        devDeps["@types/node"] = "^20.12.7";
-      }
-    }
-    if (framework === "Vue") {
-      deps["vue"] = "^3.4.21";
-      devDeps["@vitejs/plugin-vue"] = "^5.0.4";
-      devDeps["vite"] = "^5.2.11";
-    }
-
-    // Common dev deps
-    if (isTS) {
-      devDeps["typescript"] = "^5.4.5";
-      devDeps["ts-node"] = "^10.9.2";
-      devDeps["tsx"] = "^4.10.2";
-    }
-    devDeps["eslint"] = "^8.57.0";
-
-    // Scripts
-    if (framework === "Next.js") {
-      scripts["dev"] = "next dev";
-      scripts["build"] = "next build";
-      scripts["start"] = "next start";
-      scripts["lint"] = "next lint";
-    } else if (framework === "NestJS") {
-      scripts["build"] = "nest build";
-      scripts["start"] = "nest start";
-      scripts["start:dev"] = "nest start --watch";
-      scripts["start:prod"] = "node dist/main";
-      scripts["lint"] = "eslint \"{src,apps,libs,test}/**/*.ts\"";
-    } else if (isReact) {
-      scripts["dev"] = "vite";
-      scripts["build"] = "vite build";
-      scripts["preview"] = "vite preview";
-      scripts["lint"] = "eslint src";
-    } else {
-      scripts["start"] = isTS ? "tsx src/index.ts" : "node src/index.js";
-      scripts["dev"] = isTS ? "tsx watch src/index.ts" : "node --watch src/index.js";
-      scripts["build"] = isTS ? "tsc" : "echo 'No build step needed'";
-      scripts["lint"] = "eslint src";
-    }
-    scripts["test"] = "echo 'No tests yet'";
-
-    const packageJson = {
-      name: projectName,
-      version: "0.1.0",
-      private: true,
-      scripts,
-      dependencies: deps,
-      devDependencies: devDeps,
-      engines: { node: ">=18.0.0" },
-    };
-
     const files: ScaffoldFile[] = [
-      { path: "package.json", content: JSON.stringify(packageJson, null, 2) },
-      { path: ".env.example", content: this.envExample(framework) },
-      { path: ".env", content: "# Copy from .env.example and fill in real values\n" },
+      ...this.javaScaffold(opts),
+      this.dockerfile(opts),
+      this.dockerCompose(opts),
+      ...this.terraform(opts),
+      this.gitignore(),
+      this.readme(opts),
+      this.editorconfig(),
+      this.vscodeSettings(),
+      this.vscodeExtensions(),
     ];
-
-    if (isTS) {
-      const tsconfig: any = {
-        compilerOptions: {
-          target: "ES2022",
-          module: isReact ? "ESNext" : "CommonJS",
-          moduleResolution: isReact ? "bundler" : "node",
-          lib: isReact ? ["ES2022", "DOM", "DOM.Iterable"] : ["ES2022"],
-          outDir: "./dist",
-          rootDir: "./src",
-          strict: true,
-          esModuleInterop: true,
-          skipLibCheck: true,
-          forceConsistentCasingInFileNames: true,
-          resolveJsonModule: true,
-          declaration: true,
-          declarationMap: true,
-          sourceMap: true,
-          ...(isReact ? { jsx: "react-jsx", allowImportingTsExtensions: true, noEmit: true } : {}),
-          ...(framework === "NestJS" ? { experimentalDecorators: true, emitDecoratorMetadata: true } : {}),
-        },
-        include: ["src/**/*"],
-        exclude: ["node_modules", "dist"],
-      };
-      files.push({ path: "tsconfig.json", content: JSON.stringify(tsconfig, null, 2) });
-    }
-
-    if (isReact && framework !== "Next.js") {
-      files.push({
-        path: "vite.config." + (isTS ? "ts" : "js"),
-        content: isTS
-          ? `import { defineConfig } from 'vite'\nimport react from '@vitejs/plugin-react'\n\nexport default defineConfig({\n  plugins: [react()],\n})\n`
-          : `import { defineConfig } from 'vite'\nimport react from '@vitejs/plugin-react'\n\nexport default defineConfig({\n  plugins: [react()],\n})\n`,
-      });
-      files.push({
-        path: "index.html",
-        content: `<!doctype html>\n<html lang="en">\n  <head>\n    <meta charset="UTF-8" />\n    <meta name="viewport" content="width=device-width, initial-scale=1.0" />\n    <title>${projectName}</title>\n  </head>\n  <body>\n    <div id="root"></div>\n    <script type="module" src="/src/main.${isTS ? "tsx" : "jsx"}"></script>\n  </body>\n</html>\n`,
-      });
-    }
-
-    if (framework === "NestJS") {
-      files.push({ path: "nest-cli.json", content: JSON.stringify({ $schema: "https://json.schemastore.org/nest-cli", collection: "@nestjs/schematics", sourceRoot: "src", compilerOptions: { deleteOutDir: true } }, null, 2) });
-    }
-
-    // Prettier
-    files.push({ path: ".prettierrc", content: JSON.stringify({ semi: true, singleQuote: true, trailingComma: "all", printWidth: 100, tabWidth: 2 }, null, 2) });
-
-    // ESLint
-    files.push({
-      path: ".eslintrc.json",
-      content: JSON.stringify({
-        env: { es2022: true, node: true },
-        extends: isTS ? ["eslint:recommended", "plugin:@typescript-eslint/recommended"] : ["eslint:recommended"],
-        parser: isTS ? "@typescript-eslint/parser" : undefined,
-        plugins: isTS ? ["@typescript-eslint"] : undefined,
-        rules: { "no-console": "warn" },
-      }, null, 2),
-    });
-
     return files;
   }
 
-  // ─── Python ─────────────────────────────────────────────────────────────
-
-  private pythonScaffold(opts: ScaffoldOptions): ScaffoldFile[] {
-    const { projectName, framework, buildTool } = opts;
-    const files: ScaffoldFile[] = [];
-
-    if (buildTool === "poetry" || buildTool === "uv") {
-      files.push({
-        path: "pyproject.toml",
-        content: `[tool.poetry]\nname = "${projectName}"\nversion = "0.1.0"\ndescription = ""\nauthors = []\n\n[tool.poetry.dependencies]\npython = "^3.11"\n${framework === "FastAPI" ? 'fastapi = "^0.111.0"\nuvicorn = {extras = ["standard"], version = "^0.29.0"}\n' : framework === "Django" ? 'django = "^5.0.6"\n' : 'flask = "^3.0.3"\n'}\n[tool.poetry.group.dev.dependencies]\npytest = "^8.2.0"\nblack = "^24.4.2"\nruff = "^0.4.4"\n\n[build-system]\nrequires = ["poetry-core"]\nbuild-backend = "poetry.core.masonry.api"\n`,
-      });
-    } else {
-      const reqs = [
-        framework === "FastAPI" ? "fastapi>=0.111.0\nuvicorn[standard]>=0.29.0\npython-dotenv>=1.0.1" :
-        framework === "Django"  ? "django>=5.0.6\npython-dotenv>=1.0.1" :
-                                  "flask>=3.0.3\npython-dotenv>=1.0.1",
-      ];
-      files.push({ path: "requirements.txt", content: reqs.join("\n") + "\n" });
-      files.push({ path: "requirements-dev.txt", content: "pytest>=8.2.0\nblack>=24.4.2\nruff>=0.4.4\n" });
-    }
-
-    files.push({
-      path: "pyproject.toml",
-      content: `[tool.black]\nline-length = 100\n\n[tool.ruff]\nline-length = 100\nselect = ["E", "F", "I"]\n\n[tool.pytest.ini_options]\ntestpaths = ["tests"]\n`,
-    });
-
-    files.push({ path: ".env.example", content: this.envExample(framework) });
-    files.push({ path: ".env", content: "# Copy from .env.example and fill in real values\n" });
-    files.push({ path: "tests/__init__.py", content: "" });
-    files.push({ path: "tests/test_main.py", content: `def test_placeholder():\n    assert True\n` });
-
-    if (framework === "FastAPI") {
-      files.push({ path: "src/main.py", content: `from fastapi import FastAPI\n\napp = FastAPI(title="${projectName}")\n\n@app.get("/health")\nasync def health():\n    return {"status": "ok"}\n` });
-    }
-
-    return files;
-  }
-
-  // ─── Java ────────────────────────────────────────────────────────────────
+  // ─── Maven / Gradle build files ───────────────────────────────────────────
 
   private javaScaffold(opts: ScaffoldOptions): ScaffoldFile[] {
-    const { projectName, framework, buildTool } = opts;
-    const groupId = "com.example";
+    const { projectName, javaVersion, springBootVersion, buildTool } = opts;
+    const groupId    = "com.example";
     const artifactId = projectName.replace(/[^a-z0-9]/gi, "").toLowerCase() || "app";
+    const springVersion = SPRING_BOOT_PATCH[springBootVersion];
     const files: ScaffoldFile[] = [];
 
     if (buildTool === "maven") {
+      files.push({ path: "pom.xml", content: this.pomXml(groupId, artifactId, projectName, javaVersion, springVersion) });
       files.push({
-        path: "pom.xml",
-        content: `<?xml version="1.0" encoding="UTF-8"?>
+        path: ".mvn/wrapper/maven-wrapper.properties",
+        content: "distributionUrl=https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/3.9.9/apache-maven-3.9.9-bin.zip\n",
+      });
+      files.push({
+        path: "mvnw",
+        content: `#!/bin/sh\nexec "$(dirname "$0")/.mvn/wrapper/MavenWrapperMain.sh" "$@"\n`,
+      });
+    } else {
+      files.push({ path: "build.gradle.kts", content: this.buildGradleKts(groupId, artifactId, javaVersion, springVersion) });
+      files.push({ path: "settings.gradle.kts", content: `rootProject.name = "${artifactId}"\n` });
+      files.push({ path: "gradle/wrapper/gradle-wrapper.properties", content: "distributionUrl=https\\://services.gradle.org/distributions/gradle-8.10-bin.zip\n" });
+    }
+
+    files.push({ path: "src/main/resources/application.yml",     content: this.applicationYml(artifactId) });
+    files.push({ path: "src/main/resources/application-dev.yml", content: this.applicationDevYml(artifactId) });
+    files.push({ path: "src/test/resources/application-test.yml", content: this.applicationTestYml(artifactId) });
+    files.push({ path: ".env.example",                            content: this.envExample(artifactId) });
+    files.push({ path: "src/main/resources/db/migration/.gitkeep", content: "" });
+
+    return files;
+  }
+
+  private pomXml(groupId: string, artifactId: string, projectName: string, javaVersion: JavaVersion, springVersion: string): string {
+    return `<?xml version="1.0" encoding="UTF-8"?>
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
+
   <parent>
     <groupId>org.springframework.boot</groupId>
     <artifactId>spring-boot-starter-parent</artifactId>
-    <version>3.2.5</version>
+    <version>${springVersion}</version>
+    <relativePath/>
   </parent>
+
   <groupId>${groupId}</groupId>
   <artifactId>${artifactId}</artifactId>
   <version>0.0.1-SNAPSHOT</version>
   <name>${projectName}</name>
+  <description>Spring Boot project generated by Arch Builder</description>
+
   <properties>
-    <java.version>21</java.version>
+    <java.version>${javaVersion}</java.version>
+    <mapstruct.version>1.6.3</mapstruct.version>
+    <lombok.version>1.18.36</lombok.version>
+    <testcontainers.version>1.20.4</testcontainers.version>
+    <springdoc.version>2.7.0</springdoc.version>
   </properties>
+
   <dependencies>
+    <!-- Web -->
     <dependency>
       <groupId>org.springframework.boot</groupId>
-      <artifactId>spring-boot-starter${framework === "Spring Boot" ? "-web" : ""}</artifactId>
+      <artifactId>spring-boot-starter-web</artifactId>
     </dependency>
+
+    <!-- Security -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-security</artifactId>
+    </dependency>
+
+    <!-- JPA / Database -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-data-jpa</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.postgresql</groupId>
+      <artifactId>postgresql</artifactId>
+      <scope>runtime</scope>
+    </dependency>
+
+    <!-- Validation -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-validation</artifactId>
+    </dependency>
+
+    <!-- Actuator -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-actuator</artifactId>
+    </dependency>
+
+    <!-- Flyway -->
+    <dependency>
+      <groupId>org.flywaydb</groupId>
+      <artifactId>flyway-core</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.flywaydb</groupId>
+      <artifactId>flyway-database-postgresql</artifactId>
+    </dependency>
+
+    <!-- OpenAPI / Swagger -->
+    <dependency>
+      <groupId>org.springdoc</groupId>
+      <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
+      <version>\${springdoc.version}</version>
+    </dependency>
+
+    <!-- JWT -->
+    <dependency>
+      <groupId>io.jsonwebtoken</groupId>
+      <artifactId>jjwt-api</artifactId>
+      <version>0.12.6</version>
+    </dependency>
+    <dependency>
+      <groupId>io.jsonwebtoken</groupId>
+      <artifactId>jjwt-impl</artifactId>
+      <version>0.12.6</version>
+      <scope>runtime</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.jsonwebtoken</groupId>
+      <artifactId>jjwt-jackson</artifactId>
+      <version>0.12.6</version>
+      <scope>runtime</scope>
+    </dependency>
+
+    <!-- Lombok -->
+    <dependency>
+      <groupId>org.projectlombok</groupId>
+      <artifactId>lombok</artifactId>
+      <optional>true</optional>
+    </dependency>
+
+    <!-- MapStruct -->
+    <dependency>
+      <groupId>org.mapstruct</groupId>
+      <artifactId>mapstruct</artifactId>
+      <version>\${mapstruct.version}</version>
+    </dependency>
+
+    <!-- Testing -->
     <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-test</artifactId>
       <scope>test</scope>
     </dependency>
+    <dependency>
+      <groupId>org.springframework.security</groupId>
+      <artifactId>spring-security-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <version>\${testcontainers.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>postgresql</artifactId>
+      <version>\${testcontainers.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.rest-assured</groupId>
+      <artifactId>rest-assured</artifactId>
+      <scope>test</scope>
+    </dependency>
   </dependencies>
+
   <build>
     <plugins>
       <plugin>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-maven-plugin</artifactId>
+        <configuration>
+          <excludes>
+            <exclude>
+              <groupId>org.projectlombok</groupId>
+              <artifactId>lombok</artifactId>
+            </exclude>
+          </excludes>
+        </configuration>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <configuration>
+          <annotationProcessorPaths>
+            <path>
+              <groupId>org.projectlombok</groupId>
+              <artifactId>lombok</artifactId>
+              <version>\${lombok.version}</version>
+            </path>
+            <path>
+              <groupId>org.mapstruct</groupId>
+              <artifactId>mapstruct-processor</artifactId>
+              <version>\${mapstruct.version}</version>
+            </path>
+          </annotationProcessorPaths>
+        </configuration>
       </plugin>
     </plugins>
   </build>
-</project>`,
-      });
-    } else {
-      files.push({
-        path: "build.gradle.kts",
-        content: `plugins {\n  java\n  id("org.springframework.boot") version "3.2.5"\n  id("io.spring.dependency-management") version "1.1.4"\n}\n\ngroup = "${groupId}"\nversion = "0.0.1-SNAPSHOT"\n\njava {\n  sourceCompatibility = JavaVersion.VERSION_21\n}\n\nrepositories { mavenCentral() }\n\ndependencies {\n  implementation("org.springframework.boot:spring-boot-starter-web")\n  testImplementation("org.springframework.boot:spring-boot-starter-test")\n}\n\ntasks.withType<Test> { useJUnitPlatform() }\n`,
-      });
-      files.push({ path: "settings.gradle.kts", content: `rootProject.name = "${artifactId}"\n` });
-    }
-
-    files.push({ path: "src/main/resources/application.properties", content: `spring.application.name=${artifactId}\nserver.port=8080\n` });
-    files.push({ path: "src/main/resources/application-dev.properties", content: `# Dev overrides\n` });
-    files.push({ path: ".env.example", content: this.envExample(framework) });
-    files.push({ path: ".mvn/wrapper/maven-wrapper.properties", content: `distributionUrl=https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/3.9.6/apache-maven-3.9.6-bin.zip\n` });
-
-    return files;
+</project>`;
   }
 
-  // ─── C++ ─────────────────────────────────────────────────────────────────
+  private buildGradleKts(groupId: string, artifactId: string, javaVersion: JavaVersion, springVersion: string): string {
+    return `plugins {
+    java
+    id("org.springframework.boot") version "${springVersion}"
+    id("io.spring.dependency-management") version "${DEPENDENCY_MGMT_VERSION}"
+}
 
-  private cppScaffold(opts: ScaffoldOptions): ScaffoldFile[] {
-    const { projectName, buildTool } = opts;
-    const files: ScaffoldFile[] = [];
+group = "${groupId}"
+version = "0.0.1-SNAPSHOT"
 
-    if (buildTool === "cmake" || buildTool === "make") {
-      files.push({
-        path: "CMakeLists.txt",
-        content: `cmake_minimum_required(VERSION 3.20)\nproject(${projectName} VERSION 0.1.0 LANGUAGES CXX)\n\nset(CMAKE_CXX_STANDARD 20)\nset(CMAKE_CXX_STANDARD_REQUIRED ON)\nset(CMAKE_EXPORT_COMPILE_COMMANDS ON)\n\nfile(GLOB_RECURSE SOURCES "src/*.cpp")\nadd_executable(${projectName} \${SOURCES})\ntarget_include_directories(${projectName} PRIVATE include)\n`,
-      });
-      files.push({
-        path: "build.sh",
-        content: `#!/bin/bash\nmkdir -p build && cd build\ncmake .. -DCMAKE_BUILD_TYPE=Debug\ncmake --build . -j$(nproc)\n`,
-      });
-    } else {
-      files.push({
-        path: "meson.build",
-        content: `project('${projectName}', 'cpp', version: '0.1.0', default_options: ['cpp_std=c++20'])\nexecutable('${projectName}', 'src/main.cpp', install: true)\n`,
-      });
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(${javaVersion})
     }
+}
 
-    files.push({ path: "include/.gitkeep", content: "" });
-    files.push({ path: ".clang-format", content: `BasedOnStyle: Google\nIndentWidth: 4\nColumnLimit: 100\n` });
-    files.push({ path: ".clang-tidy", content: `Checks: "clang-diagnostic-*,clang-analyzer-*,modernize-*,readability-*"\n` });
+configurations {
+    compileOnly { extendsFrom(configurations.annotationProcessor.get()) }
+}
 
-    return files;
+repositories {
+    mavenCentral()
+}
+
+val mapstructVersion = "1.6.3"
+val testcontainersVersion = "1.20.4"
+val springdocVersion = "2.7.0"
+val jjwtVersion = "0.12.6"
+
+dependencies {
+    // Web
+    implementation("org.springframework.boot:spring-boot-starter-web")
+    // Security
+    implementation("org.springframework.boot:spring-boot-starter-security")
+    // JPA
+    implementation("org.springframework.boot:spring-boot-starter-data-jpa")
+    runtimeOnly("org.postgresql:postgresql")
+    // Validation
+    implementation("org.springframework.boot:spring-boot-starter-validation")
+    // Actuator
+    implementation("org.springframework.boot:spring-boot-starter-actuator")
+    // Flyway
+    implementation("org.flywaydb:flyway-core")
+    implementation("org.flywaydb:flyway-database-postgresql")
+    // OpenAPI
+    implementation("org.springdoc:springdoc-openapi-starter-webmvc-ui:\$springdocVersion")
+    // JWT
+    implementation("io.jsonwebtoken:jjwt-api:\$jjwtVersion")
+    runtimeOnly("io.jsonwebtoken:jjwt-impl:\$jjwtVersion")
+    runtimeOnly("io.jsonwebtoken:jjwt-jackson:\$jjwtVersion")
+    // Lombok
+    compileOnly("org.projectlombok:lombok")
+    annotationProcessor("org.projectlombok:lombok")
+    // MapStruct
+    implementation("org.mapstruct:mapstruct:\$mapstructVersion")
+    annotationProcessor("org.mapstruct:mapstruct-processor:\$mapstructVersion")
+    // Testing
+    testImplementation("org.springframework.boot:spring-boot-starter-test")
+    testImplementation("org.springframework.security:spring-security-test")
+    testImplementation("org.testcontainers:junit-jupiter:\$testcontainersVersion")
+    testImplementation("org.testcontainers:postgresql:\$testcontainersVersion")
+    testImplementation("io.rest-assured:rest-assured")
+    testCompileOnly("org.projectlombok:lombok")
+    testAnnotationProcessor("org.projectlombok:lombok")
+}
+
+tasks.withType<Test> {
+    useJUnitPlatform()
+}
+`;
+  }
+
+  // ─── Config files ─────────────────────────────────────────────────────────
+
+  private applicationYml(artifactId: string): string {
+    return `spring:
+  application:
+    name: ${artifactId}
+  datasource:
+    url: \${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/${artifactId}}
+    username: \${SPRING_DATASOURCE_USERNAME:postgres}
+    password: \${SPRING_DATASOURCE_PASSWORD:}
+    hikari:
+      maximum-pool-size: \${DB_POOL_MAX:10}
+      minimum-idle: 2
+      connection-timeout: 20000
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    show-sql: false
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        format_sql: true
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+
+server:
+  port: \${PORT:8080}
+  error:
+    include-message: always
+    include-binding-errors: always
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: when-authorized
+
+springdoc:
+  api-docs:
+    path: /api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+
+jwt:
+  secret: \${JWT_SECRET:change-this-secret-in-production-min-256-bits}
+  access-token-expiry: \${JWT_ACCESS_EXPIRY:900000}
+  refresh-token-expiry: \${JWT_REFRESH_EXPIRY:604800000}
+
+logging:
+  level:
+    root: INFO
+    com.example: DEBUG
+`;
+  }
+
+  private applicationDevYml(_artifactId: string): string {
+    return `# Development overrides
+spring:
+  jpa:
+    show-sql: true
+  flyway:
+    clean-on-validation-error: true
+
+logging:
+  level:
+    org.hibernate.SQL: DEBUG
+    org.hibernate.type.descriptor.sql: TRACE
+`;
+  }
+
+  private applicationTestYml(_artifactId: string): string {
+    return `# Test profile — datasource overridden by @DynamicPropertySource from TestContainers
+spring:
+  jpa:
+    show-sql: true
+  flyway:
+    enabled: true
+
+logging:
+  level:
+    root: WARN
+    com.example: INFO
+`;
+  }
+
+  private envExample(artifactId: string): string {
+    return `# ── Database ─────────────────────────────────────────────────────────────────
+SPRING_DATASOURCE_URL=jdbc:postgresql://localhost:5432/${artifactId}
+SPRING_DATASOURCE_USERNAME=postgres
+SPRING_DATASOURCE_PASSWORD=
+
+# ── Security ──────────────────────────────────────────────────────────────────
+# Generate with: openssl rand -base64 64
+JWT_SECRET=change-this-secret-in-production-min-256-bits
+JWT_ACCESS_EXPIRY=900000
+JWT_REFRESH_EXPIRY=604800000
+
+# ── Server ────────────────────────────────────────────────────────────────────
+PORT=8080
+`;
+  }
+
+  // ─── Docker ──────────────────────────────────────────────────────────────
+
+  private dockerfile(opts: ScaffoldOptions): ScaffoldFile {
+    const { javaVersion, buildTool } = opts;
+    const buildCmd = buildTool === "maven"
+      ? "RUN ./mvnw package -DskipTests -q"
+      : "RUN ./gradlew build -x test -q";
+    const copyCmd = buildTool === "maven"
+      ? "COPY .mvn/ .mvn/\nCOPY mvnw pom.xml ./"
+      : "COPY gradle/ gradle/\nCOPY gradlew build.gradle.kts settings.gradle.kts ./";
+
+    return {
+      path: "Dockerfile",
+      content: `# ── Build stage ──────────────────────────────────────────────────────────────
+FROM eclipse-temurin:${javaVersion}-jdk-alpine AS build
+WORKDIR /app
+
+${copyCmd}
+RUN ${buildTool === "maven" ? "./mvnw dependency:resolve -q" : "./gradlew dependencies -q"} || true
+
+COPY src ./src
+${buildCmd}
+
+# ── Runtime stage ─────────────────────────────────────────────────────────────
+FROM eclipse-temurin:${javaVersion}-jre-alpine
+WORKDIR /app
+
+RUN addgroup -S spring && adduser -S spring -G spring
+USER spring:spring
+
+COPY --from=build /app/${buildTool === "maven" ? "target" : "build/libs"}/*.jar app.jar
+
+EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=3s --start-period=60s \\
+  CMD wget -qO- http://localhost:8080/actuator/health || exit 1
+
+ENTRYPOINT ["java", "-XX:+UseContainerSupport", "-XX:MaxRAMPercentage=75.0", "-jar", "app.jar"]
+`,
+    };
+  }
+
+  private dockerCompose(opts: ScaffoldOptions): ScaffoldFile {
+    const { projectName } = opts;
+    const name = projectName.replace(/[^a-z0-9]/gi, "").toLowerCase() || "app";
+
+    return {
+      path: "docker-compose.yml",
+      content: `version: '3.9'
+
+services:
+  app:
+    build: .
+    image: ${name}:latest
+    ports:
+      - "\${PORT:-8080}:8080"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/${name}
+      SPRING_DATASOURCE_USERNAME: postgres
+      SPRING_DATASOURCE_PASSWORD: \${DB_PASSWORD:-postgres}
+      JWT_SECRET: \${JWT_SECRET:-change-in-production}
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - backend
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${name}
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: \${DB_PASSWORD:-postgres}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d ${name}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - backend
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    command: redis-server --save 60 1 --loglevel warning
+    volumes:
+      - redis_data:/data
+    networks:
+      - backend
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  backend:
+    driver: bridge
+`,
+    };
+  }
+
+  // ─── Terraform ───────────────────────────────────────────────────────────
+
+  private terraform(opts: ScaffoldOptions): ScaffoldFile[] {
+    const { projectName, javaVersion } = opts;
+    const name = projectName.replace(/[^a-z0-9-]/g, "-").toLowerCase() || "app";
+
+    return [
+      {
+        path: "terraform/main.tf",
+        content: `terraform {
+  required_version = ">= 1.6"
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+  }
+
+  backend "s3" {
+    bucket = "${name}-tf-state"
+    key    = "prod/terraform.tfstate"
+    region = "us-east-1"
+  }
+}
+
+provider "aws" {
+  region = var.aws_region
+}
+
+module "vpc" {
+  source = "./modules/vpc"
+  name   = var.app_name
+  env    = var.environment
+}
+
+module "ecr" {
+  source   = "./modules/ecr"
+  app_name = var.app_name
+}
+
+module "rds" {
+  source            = "./modules/rds"
+  app_name          = var.app_name
+  env               = var.environment
+  vpc_id            = module.vpc.vpc_id
+  subnet_ids        = module.vpc.private_subnet_ids
+  security_group_id = module.vpc.db_security_group_id
+}
+
+module "ecs" {
+  source             = "./modules/ecs"
+  app_name           = var.app_name
+  env                = var.environment
+  image_uri          = "\${module.ecr.repository_url}:latest"
+  vpc_id             = module.vpc.vpc_id
+  subnet_ids         = module.vpc.private_subnet_ids
+  alb_subnet_ids     = module.vpc.public_subnet_ids
+  db_url             = module.rds.jdbc_url
+  db_secret_arn      = module.rds.secret_arn
+  java_opts          = "-XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0"
+}
+`,
+      },
+      {
+        path: "terraform/variables.tf",
+        content: `variable "aws_region" {
+  description = "AWS region to deploy to"
+  type        = string
+  default     = "us-east-1"
+}
+
+variable "app_name" {
+  description = "Application name (used for resource naming)"
+  type        = string
+  default     = "${name}"
+}
+
+variable "environment" {
+  description = "Deployment environment (dev, staging, prod)"
+  type        = string
+  default     = "prod"
+}
+
+variable "java_version" {
+  description = "Java version for the container"
+  type        = string
+  default     = "${javaVersion}"
+}
+`,
+      },
+      {
+        path: "terraform/outputs.tf",
+        content: `output "alb_dns_name" {
+  description = "DNS name of the Application Load Balancer"
+  value       = module.ecs.alb_dns_name
+}
+
+output "ecr_repository_url" {
+  description = "ECR repository URL"
+  value       = module.ecr.repository_url
+}
+
+output "rds_endpoint" {
+  description = "RDS PostgreSQL endpoint"
+  value       = module.rds.endpoint
+  sensitive   = true
+}
+`,
+      },
+      {
+        path: "terraform/modules/ecr/main.tf",
+        content: `resource "aws_ecr_repository" "app" {
+  name                 = var.app_name
+  image_tag_mutability = "MUTABLE"
+
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+
+  lifecycle_policy {
+    policy = jsonencode({
+      rules = [{
+        rulePriority = 1
+        description  = "Keep last 10 images"
+        selection     = { tagStatus = "any", countType = "imageCountMoreThan", countNumber = 10 }
+        action        = { type = "expire" }
+      }]
+    })
+  }
+}
+
+output "repository_url" { value = aws_ecr_repository.app.repository_url }
+
+variable "app_name" { type = string }
+`,
+      },
+      {
+        path: "terraform/modules/rds/main.tf",
+        content: `resource "aws_db_instance" "postgres" {
+  identifier             = "\${var.app_name}-\${var.env}"
+  engine                 = "postgres"
+  engine_version         = "16.3"
+  instance_class         = "db.t3.micro"
+  allocated_storage      = 20
+  storage_encrypted      = true
+  db_name                = replace(var.app_name, "-", "_")
+  username               = "postgres"
+  manage_master_user_password = true
+  vpc_security_group_ids = [var.security_group_id]
+  db_subnet_group_name   = aws_db_subnet_group.main.name
+  skip_final_snapshot    = var.env != "prod"
+  deletion_protection    = var.env == "prod"
+  multi_az               = var.env == "prod"
+
+  tags = { Name = "\${var.app_name}-db-\${var.env}", Environment = var.env }
+}
+
+resource "aws_db_subnet_group" "main" {
+  name       = "\${var.app_name}-\${var.env}"
+  subnet_ids = var.subnet_ids
+}
+
+output "endpoint"    { value = aws_db_instance.postgres.endpoint }
+output "jdbc_url"    { value = "jdbc:postgresql://\${aws_db_instance.postgres.endpoint}/\${replace(var.app_name, "-", "_")}" }
+output "secret_arn"  { value = aws_db_instance.postgres.master_user_secret[0].secret_arn }
+
+variable "app_name"          { type = string }
+variable "env"                { type = string }
+variable "vpc_id"             { type = string }
+variable "subnet_ids"         { type = list(string) }
+variable "security_group_id"  { type = string }
+`,
+      },
+      {
+        path: "terraform/modules/ecs/main.tf",
+        content: `resource "aws_ecs_cluster" "main" {
+  name = "\${var.app_name}-\${var.env}"
+  setting { name = "containerInsights"; value = "enabled" }
+}
+
+resource "aws_ecs_task_definition" "app" {
+  family                   = "\${var.app_name}-\${var.env}"
+  network_mode             = "awsvpc"
+  requires_compatibilities = ["FARGATE"]
+  cpu                      = "512"
+  memory                   = "1024"
+  execution_role_arn       = aws_iam_role.ecs_execution.arn
+  task_role_arn            = aws_iam_role.ecs_task.arn
+
+  container_definitions = jsonencode([{
+    name      = var.app_name
+    image     = var.image_uri
+    essential = true
+    portMappings = [{ containerPort = 8080, protocol = "tcp" }]
+    environment = [
+      { name = "SPRING_DATASOURCE_URL",      value = var.db_url },
+      { name = "SPRING_PROFILES_ACTIVE",     value = var.env },
+      { name = "JAVA_TOOL_OPTIONS",          value = var.java_opts },
+    ]
+    secrets = [
+      { name = "SPRING_DATASOURCE_PASSWORD", valueFrom = "\${var.db_secret_arn}:password::" },
+      { name = "JWT_SECRET",                 valueFrom = var.jwt_secret_arn },
+    ]
+    logConfiguration = {
+      logDriver = "awslogs"
+      options = {
+        "awslogs-group"         = "/ecs/\${var.app_name}"
+        "awslogs-region"        = data.aws_region.current.name
+        "awslogs-stream-prefix" = "ecs"
+      }
+    }
+  }])
+}
+
+resource "aws_ecs_service" "app" {
+  name            = "\${var.app_name}-\${var.env}"
+  cluster         = aws_ecs_cluster.main.id
+  task_definition = aws_ecs_task_definition.app.arn
+  desired_count   = var.env == "prod" ? 2 : 1
+  launch_type     = "FARGATE"
+
+  network_configuration {
+    subnets          = var.subnet_ids
+    security_groups  = [aws_security_group.ecs.id]
+    assign_public_ip = false
+  }
+
+  load_balancer {
+    target_group_arn = aws_lb_target_group.app.arn
+    container_name   = var.app_name
+    container_port   = 8080
+  }
+}
+
+data "aws_region" "current" {}
+output "alb_dns_name" { value = aws_lb.app.dns_name }
+
+variable "app_name"        { type = string }
+variable "env"              { type = string }
+variable "image_uri"        { type = string }
+variable "vpc_id"           { type = string }
+variable "subnet_ids"       { type = list(string) }
+variable "alb_subnet_ids"   { type = list(string) }
+variable "db_url"           { type = string }
+variable "db_secret_arn"    { type = string }
+variable "jwt_secret_arn"   { type = string; default = "" }
+variable "java_opts"        { type = string; default = "" }
+`,
+      },
+      {
+        path: "terraform/modules/vpc/main.tf",
+        content: `data "aws_availability_zones" "available" { state = "available" }
+
+resource "aws_vpc" "main" {
+  cidr_block           = "10.0.0.0/16"
+  enable_dns_hostnames = true
+  enable_dns_support   = true
+  tags = { Name = "\${var.name}-\${var.env}" }
+}
+
+resource "aws_subnet" "public" {
+  count             = 2
+  vpc_id            = aws_vpc.main.id
+  cidr_block        = "10.0.\${count.index}.0/24"
+  availability_zone = data.aws_availability_zones.available.names[count.index]
+  map_public_ip_on_launch = true
+  tags = { Name = "\${var.name}-public-\${count.index}" }
+}
+
+resource "aws_subnet" "private" {
+  count             = 2
+  vpc_id            = aws_vpc.main.id
+  cidr_block        = "10.0.\${count.index + 10}.0/24"
+  availability_zone = data.aws_availability_zones.available.names[count.index]
+  tags = { Name = "\${var.name}-private-\${count.index}" }
+}
+
+resource "aws_security_group" "db" {
+  name   = "\${var.name}-db-\${var.env}"
+  vpc_id = aws_vpc.main.id
+  ingress { from_port = 5432; to_port = 5432; protocol = "tcp"; cidr_blocks = ["10.0.0.0/16"] }
+  egress  { from_port = 0;    to_port = 0;    protocol = "-1"; cidr_blocks = ["0.0.0.0/0"] }
+}
+
+output "vpc_id"                { value = aws_vpc.main.id }
+output "public_subnet_ids"     { value = aws_subnet.public[*].id }
+output "private_subnet_ids"    { value = aws_subnet.private[*].id }
+output "db_security_group_id"  { value = aws_security_group.db.id }
+
+variable "name" { type = string }
+variable "env"  { type = string }
+`,
+      },
+    ];
   }
 
   // ─── Shared helpers ───────────────────────────────────────────────────────
 
-  private gitignore(lang: Language): ScaffoldFile {
-    const common = `# OS\n.DS_Store\nThumbs.db\n\n# Editor\n.idea/\n*.iml\n*.swp\n*.swo\n.vscode/settings.json\n\n# Secrets\n.env\n*.pem\n*.key\n`;
+  private gitignore(): ScaffoldFile {
+    return {
+      path: ".gitignore",
+      content: `# OS
+.DS_Store
+Thumbs.db
 
-    const langSpecific: Record<Language, string> = {
-      javascript: `node_modules/\ndist/\n.next/\nout/\nbuild/\n.cache/\ncoverage/\n`,
-      typescript: `node_modules/\ndist/\n.next/\nout/\nbuild/\n.cache/\ncoverage/\n*.tsbuildinfo\n`,
-      python: `__pycache__/\n*.py[cod]\n*.egg-info/\n.venv/\nvenv/\ndist/\nbuild/\n.pytest_cache/\n.mypy_cache/\n.ruff_cache/\n`,
-      java: `target/\nbuild/\n.gradle/\n*.class\n*.jar\n*.war\n*.ear\n`,
-      cpp: `build/\n*.o\n*.obj\n*.exe\n*.out\n*.a\n*.lib\n*.so\n*.dylib\nCMakeCache.txt\nCMakeFiles/\ncompile_commands.json\n`,
+# Editor
+.idea/
+*.iml
+*.swp
+.vscode/settings.json
+
+# Secrets
+.env
+*.pem
+*.key
+*.p12
+
+# Java / Maven / Gradle
+target/
+build/
+.gradle/
+*.class
+*.jar
+*.war
+*.ear
+!gradle/wrapper/gradle-wrapper.jar
+
+# Terraform
+terraform/.terraform/
+terraform/*.tfstate
+terraform/*.tfstate.backup
+terraform/.terraform.lock.hcl
+`,
     };
-
-    return { path: ".gitignore", content: common + langSpecific[lang] };
   }
 
   private readme(opts: ScaffoldOptions): ScaffoldFile {
-    const { projectName, language, framework, buildTool } = opts;
-    const runCmd: Record<string, string> = {
-      "npm":    "npm install && npm run dev",
-      "pnpm":   "pnpm install && pnpm dev",
-      "yarn":   "yarn && yarn dev",
-      "pip":    "pip install -r requirements.txt && python src/main.py",
-      "poetry": "poetry install && poetry run uvicorn src.main:app --reload",
-      "uv":     "uv sync && uv run uvicorn src.main:app --reload",
-      "maven":  "mvn spring-boot:run",
-      "gradle": "./gradlew bootRun",
-      "cmake":  "bash build.sh && ./build/${projectName}",
-      "make":   "make",
-      "meson":  "meson setup build && meson compile -C build",
-    };
+    const { projectName, javaVersion, springBootVersion, buildTool } = opts;
+    const runCmd = buildTool === "maven" ? "./mvnw spring-boot:run" : "./gradlew bootRun";
+    const testCmd = buildTool === "maven" ? "./mvnw test" : "./gradlew test";
+    const buildCmd = buildTool === "maven" ? "./mvnw package" : "./gradlew build";
 
     return {
       path: "README.md",
       content: `# ${projectName}
 
-> Generated by **Arch Builder** · ${framework} · ${language}
+> Spring Boot ${springBootVersion} · Java ${javaVersion} · Generated by **Arch Builder**
 
-## Getting Started
+## Requirements
+
+- Java ${javaVersion}+
+- Docker & Docker Compose (for local development)
+- ${buildTool === "maven" ? "Maven 3.9+ (or use included `./mvnw`)" : "Gradle 8+ (or use included `./gradlew`)"}
+
+## Quick Start
 
 \`\`\`bash
-${runCmd[buildTool] ?? "# See build instructions above"}
+# 1. Start dependencies (PostgreSQL + Redis)
+docker compose up db redis -d
+
+# 2. Copy and configure environment
+cp .env.example .env
+
+# 3. Run the application
+${runCmd}
+\`\`\`
+
+The API will be available at http://localhost:8080
+
+- Swagger UI: http://localhost:8080/swagger-ui.html
+- Health:     http://localhost:8080/actuator/health
+
+## Running with Docker
+
+\`\`\`bash
+docker compose up --build
+\`\`\`
+
+## Testing
+
+\`\`\`bash
+# All tests (requires Docker for TestContainers)
+${testCmd}
+
+# Build JAR
+${buildCmd}
+\`\`\`
+
+## Deployment (AWS / Terraform)
+
+\`\`\`bash
+cd terraform
+terraform init
+terraform plan -out=tfplan
+terraform apply tfplan
 \`\`\`
 
 ## Project Structure
 
 \`\`\`
-src/          # Application source files
-tests/        # Test files
-.env.example  # Environment variable template
+src/
+  main/
+    java/com/example/
+      <module>/
+        controller/   REST controllers
+        service/      Business logic interfaces + implementations
+        repository/   Spring Data JPA repositories
+        entity/       JPA entities
+        dto/          Request and response DTOs
+        exception/    Domain exceptions
+    resources/
+      db/migration/   Flyway SQL migrations
+      application.yml Configuration
+  test/
+    java/             Unit tests, @WebMvcTest slices, TestContainers IT
+terraform/            AWS infrastructure (ECS + RDS + VPC)
 \`\`\`
-
-## Environment Variables
-
-Copy \`.env.example\` to \`.env\` and fill in your values before running.
-
-## Scripts
-
-| Command | Description |
-|---------|-------------|
-${this.scriptTable(buildTool)}
-
-## Architecture
-
-This project was scaffolded from an Arch Builder diagram. Each source file
-in \`src/\` corresponds to a component in the architecture diagram.
 `,
     };
-  }
-
-  private scriptTable(buildTool: string): string {
-    const tables: Record<string, string> = {
-      npm:    "| `npm run dev` | Start dev server |\n| `npm run build` | Production build |\n| `npm test` | Run tests |",
-      pnpm:   "| `pnpm dev` | Start dev server |\n| `pnpm build` | Production build |\n| `pnpm test` | Run tests |",
-      yarn:   "| `yarn dev` | Start dev server |\n| `yarn build` | Production build |\n| `yarn test` | Run tests |",
-      pip:    "| `python src/main.py` | Start app |\n| `pytest` | Run tests |",
-      poetry: "| `poetry run uvicorn src.main:app --reload` | Start dev server |\n| `poetry run pytest` | Run tests |",
-      uv:     "| `uv run uvicorn src.main:app --reload` | Start dev server |\n| `uv run pytest` | Run tests |",
-      maven:  "| `mvn spring-boot:run` | Start app |\n| `mvn test` | Run tests |\n| `mvn package` | Build JAR |",
-      gradle: "| `./gradlew bootRun` | Start app |\n| `./gradlew test` | Run tests |\n| `./gradlew build` | Build JAR |",
-      cmake:  "| `bash build.sh` | Build project |\n| `./build/app` | Run app |",
-    };
-    return tables[buildTool] ?? "";
   }
 
   private editorconfig(): ScaffoldFile {
     return {
       path: ".editorconfig",
-      content: `root = true\n\n[*]\nindent_style = space\nindent_size = 2\nend_of_line = lf\ncharset = utf-8\ntrim_trailing_whitespace = true\ninsert_final_newline = true\n\n[*.java]\nindent_size = 4\n\n[*.cpp]\nindent_size = 4\n\n[*.h]\nindent_size = 4\n\n[Makefile]\nindent_style = tab\n`,
+      content: `root = true
+
+[*]
+indent_style = space
+indent_size = 4
+end_of_line = lf
+charset = utf-8
+trim_trailing_whitespace = true
+insert_final_newline = true
+
+[*.yml]
+indent_size = 2
+
+[*.json]
+indent_size = 2
+`,
     };
   }
 
-  private vscodeSettings(opts: ScaffoldOptions): ScaffoldFile {
-    const isTS = opts.language === "typescript";
-    const isPython = opts.language === "python";
-    const isJava = opts.language === "java";
-
-    const settings: Record<string, any> = {
-      "editor.formatOnSave": true,
-      "editor.defaultFormatter": isPython ? "ms-python.black-formatter" : isJava ? "redhat.java" : "esbenp.prettier-vscode",
-      "editor.tabSize": (isJava || opts.language === "cpp") ? 4 : 2,
-      "files.trimTrailingWhitespace": true,
-      "files.insertFinalNewline": true,
+  private vscodeSettings(): ScaffoldFile {
+    return {
+      path: ".vscode/settings.json",
+      content: JSON.stringify({
+        "editor.formatOnSave": true,
+        "editor.defaultFormatter": "redhat.java",
+        "editor.tabSize": 4,
+        "files.trimTrailingWhitespace": true,
+        "files.insertFinalNewline": true,
+        "java.compile.nullAnalysis.mode": "automatic",
+        "java.format.settings.url": "https://raw.githubusercontent.com/google/styleguide/gh-pages/eclipse-java-google-style.xml",
+        "spring-boot.ls.java.home": "",
+      }, null, 2),
     };
-
-    if (isTS || opts.language === "javascript") {
-      settings["typescript.preferences.importModuleSpecifier"] = "relative";
-      settings["javascript.preferences.importModuleSpecifier"] = "relative";
-      settings["eslint.validate"] = ["javascript", "javascriptreact", "typescript", "typescriptreact"];
-    }
-    if (isPython) {
-      settings["python.defaultInterpreterPath"] = ".venv/bin/python";
-      settings["[python]"] = { "editor.defaultFormatter": "ms-python.black-formatter" };
-    }
-    if (isJava) {
-      settings["java.compile.nullAnalysis.mode"] = "automatic";
-    }
-
-    return { path: ".vscode/settings.json", content: JSON.stringify(settings, null, 2) };
   }
 
-  private vscodeExtensions(opts: ScaffoldOptions): ScaffoldFile {
-    const base = ["EditorConfig.EditorConfig", "streetsidesoftware.code-spell-checker"];
-
-    const byLang: Record<Language, string[]> = {
-      javascript: ["esbenp.prettier-vscode", "dbaeumer.vscode-eslint", "bradlc.vscode-tailwindcss"],
-      typescript: ["esbenp.prettier-vscode", "dbaeumer.vscode-eslint", "ms-vscode.vscode-typescript-next"],
-      python:     ["ms-python.python", "ms-python.black-formatter", "charliermarsh.ruff"],
-      java:       ["redhat.java", "vscjava.vscode-java-pack", "vmware.vscode-spring-boot"],
-      cpp:        ["ms-vscode.cpptools", "ms-vscode.cmake-tools", "xaver.clang-format"],
+  private vscodeExtensions(): ScaffoldFile {
+    return {
+      path: ".vscode/extensions.json",
+      content: JSON.stringify({
+        recommendations: [
+          "redhat.java",
+          "vscjava.vscode-java-pack",
+          "vmware.vscode-spring-boot",
+          "vscjava.vscode-spring-initializr",
+          "vscjava.vscode-spring-boot-dashboard",
+          "hashicorp.terraform",
+          "EditorConfig.EditorConfig",
+          "streetsidesoftware.code-spell-checker",
+        ],
+      }, null, 2),
     };
-
-    const recommendations = [...base, ...(byLang[opts.language] ?? [])];
-    return { path: ".vscode/extensions.json", content: JSON.stringify({ recommendations }, null, 2) };
-  }
-
-  private envExample(framework: string): string {
-    const lines = ["# Application", "NODE_ENV=development", "PORT=3000", ""];
-
-    if (["Express", "NestJS", "Node.js", "Spring Boot", "FastAPI", "Django", "Flask"].includes(framework)) {
-      lines.push("# Database", "DATABASE_URL=postgresql://user:password@localhost:5432/dbname", "");
-      lines.push("# Auth", "JWT_SECRET=change-me-in-production", "JWT_EXPIRES_IN=15m", "");
-      lines.push("# Redis", "REDIS_URL=redis://localhost:6379", "");
-    }
-    if (framework === "Spring Boot") {
-      lines.push("# Spring", "SPRING_DATASOURCE_URL=jdbc:postgresql://localhost:5432/dbname", "SPRING_DATASOURCE_USERNAME=user", "SPRING_DATASOURCE_PASSWORD=password", "");
-    }
-
-    return lines.join("\n");
   }
 }

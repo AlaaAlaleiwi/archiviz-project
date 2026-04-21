@@ -1,35 +1,16 @@
 import "../styles.css";
 import { useState, useRef, useEffect } from "react";
+import type { JavaVersion, SpringBootVersion, BuildTool } from "../types";
 
-interface NewProjectConfig {
-  projectName: string;
-  language: string;
-  framework: string;
-  buildTool: string;
-}
+const JAVA_VERSIONS: JavaVersion[]        = ["17", "21", "25"];
+const SPRING_VERSIONS: SpringBootVersion[] = ["3.2", "3.3", "3.4"];
+const BUILD_TOOLS: BuildTool[]             = ["maven", "gradle"];
 
-const frameworksByLanguage: Record<string, string[]> = {
-  javascript: ["Node.js", "Express", "React", "Vue", "Angular", "Next.js"],
-  typescript: ["Node.js", "NestJS", "React", "Vue", "Angular", "Next.js"],
-  python:     ["FastAPI", "Django", "Flask"],
-  java:       ["Spring Boot", "Quarkus"],
-  cpp:        ["C++", "CMake"],
-};
-
-const buildToolsByLanguage: Record<string, string[]> = {
-  javascript: ["npm", "pnpm", "yarn"],
-  typescript: ["npm", "pnpm", "yarn"],
-  python:     ["pip", "poetry", "uv"],
-  java:       ["maven", "gradle"],
-  cpp:        ["cmake", "make", "meson"],
-};
-
-const LANGUAGE_ICONS: Record<string, string> = {
-  javascript: "JS",
-  typescript: "TS",
-  python:     "PY",
-  java:       "☕",
-  cpp:        "C++",
+type JavaProjectConfig = {
+  projectName:       string;
+  javaVersion:       JavaVersion;
+  springBootVersion: SpringBootVersion;
+  buildTool:         BuildTool;
 };
 
 /* ─────────────────────────────────────────
@@ -80,7 +61,7 @@ function DropdownMenu({ label, items, disabled = false }: { label: string; items
 }
 
 /* ─────────────────────────────────────────
-   UNSAVED CHANGES CONFIRMATION MODAL
+   UNSAVED CHANGES MODAL
 ───────────────────────────────────────── */
 function UnsavedChangesModal({
   projectName,
@@ -101,7 +82,7 @@ function UnsavedChangesModal({
           <span className="np-title">Unsaved changes</span>
           <p className="unsaved-desc">
             <strong>{projectName || "This project"}</strong> has unsaved changes.
-            Would you like to save before creating a new project?
+            Save before creating a new project?
           </p>
         </div>
         <div className="unsaved-actions">
@@ -115,33 +96,23 @@ function UnsavedChangesModal({
 }
 
 /* ─────────────────────────────────────────
-   NEW PROJECT MODAL
+   PROJECT CONFIG MODAL (Java-only)
 ───────────────────────────────────────── */
-function NewProjectModal({
+function ProjectConfigModal({
   initial,
   title = "New Project",
   confirmLabel = "Create Project →",
   onConfirm,
   onClose,
 }: {
-  initial: NewProjectConfig;
+  initial: JavaProjectConfig;
   title?: string;
   confirmLabel?: string;
-  onConfirm: (cfg: NewProjectConfig) => void;
+  onConfirm: (cfg: JavaProjectConfig) => void;
   onClose: () => void;
 }) {
-  const [cfg, setCfg] = useState<NewProjectConfig>(initial);
-
-  const update = (patch: Partial<NewProjectConfig>) =>
-    setCfg(prev => ({ ...prev, ...patch }));
-
-  const handleLangChange = (lang: string) => {
-    update({
-      language:  lang,
-      framework: frameworksByLanguage[lang]?.[0] || "",
-      buildTool: buildToolsByLanguage[lang]?.[0] || "",
-    });
-  };
+  const [cfg, setCfg] = useState<JavaProjectConfig>(initial);
+  const update = (patch: Partial<JavaProjectConfig>) => setCfg(prev => ({ ...prev, ...patch }));
 
   const handleConfirm = () => {
     if (!cfg.projectName.trim()) { alert("Please enter a project name."); return; }
@@ -171,33 +142,30 @@ function NewProjectModal({
         </div>
 
         <div className="np-field">
-          <label className="np-label">Language</label>
-          <div className="np-lang-grid">
-            {Object.keys(frameworksByLanguage).map(lang => (
+          <label className="np-label">Java Version</label>
+          <div className="np-chip-row">
+            {JAVA_VERSIONS.map(v => (
               <button
-                key={lang}
-                className={`np-lang-btn ${cfg.language === lang ? "active" : ""}`}
-                onClick={() => handleLangChange(lang)}
+                key={v}
+                className={`np-chip ${cfg.javaVersion === v ? "active" : ""}`}
+                onClick={() => update({ javaVersion: v })}
               >
-                <span className="np-lang-badge">{LANGUAGE_ICONS[lang]}</span>
-                <span className="np-lang-name">
-                  {lang.charAt(0).toUpperCase() + lang.slice(1)}
-                </span>
+                ☕ Java {v}
               </button>
             ))}
           </div>
         </div>
 
         <div className="np-field">
-          <label className="np-label">Framework</label>
+          <label className="np-label">Spring Boot Version</label>
           <div className="np-chip-row">
-            {(frameworksByLanguage[cfg.language] || []).map(fw => (
+            {SPRING_VERSIONS.map(v => (
               <button
-                key={fw}
-                className={`np-chip ${cfg.framework === fw ? "active" : ""}`}
-                onClick={() => update({ framework: fw })}
+                key={v}
+                className={`np-chip ${cfg.springBootVersion === v ? "active" : ""}`}
+                onClick={() => update({ springBootVersion: v })}
               >
-                {fw}
+                Spring Boot {v}
               </button>
             ))}
           </div>
@@ -206,13 +174,13 @@ function NewProjectModal({
         <div className="np-field">
           <label className="np-label">Build Tool</label>
           <div className="np-chip-row">
-            {(buildToolsByLanguage[cfg.language] || []).map(tool => (
+            {BUILD_TOOLS.map(t => (
               <button
-                key={tool}
-                className={`np-chip ${cfg.buildTool === tool ? "active" : ""}`}
-                onClick={() => update({ buildTool: tool })}
+                key={t}
+                className={`np-chip ${cfg.buildTool === t ? "active" : ""}`}
+                onClick={() => update({ buildTool: t })}
               >
-                {tool}
+                {t === "maven" ? "⚙ Maven" : "🐘 Gradle"}
               </button>
             ))}
           </div>
@@ -232,72 +200,77 @@ function NewProjectModal({
 /* ─────────────────────────────────────────
    TOPBAR
 ───────────────────────────────────────── */
+interface TopbarProps {
+  generate: () => void;
+  askAI: () => void;
+  loading: boolean;
+  canGenerate: boolean;
+  canAskAI: boolean;
+  canSaveProject: boolean;
+  hasUnsavedChanges?: boolean;
+  importingProject?: boolean;
+  theme: "dark" | "light";
+  setTheme: (t: "dark" | "light") => void;
+  javaVersion: JavaVersion;
+  setJavaVersion: (v: JavaVersion) => void;
+  springBootVersion: SpringBootVersion;
+  setSpringBootVersion: (v: SpringBootVersion) => void;
+  projectName: string;
+  setProjectName: (n: string) => void;
+  buildTool: BuildTool;
+  setBuildTool: (t: BuildTool) => void;
+  onOpenSettings: () => void;
+  onCancel: () => void;
+  onCreateProject: () => void;
+  onOpenProject: () => void;
+  onImportProject: () => void;
+  onSaveProject: () => void;
+  onExportProject: () => void;
+  onLogout?: () => void;
+}
+
 export default function Topbar({
-  generate,
-  askAI,
-  loading,
-  canGenerate,
-  canAskAI,
-  canSaveProject,
-  hasUnsavedChanges,
-  theme,
-  setTheme,
-  language,
-  setLanguage,
-  framework,
-  setFramework,
-  projectName,
-  setProjectName,
-  buildTool,
-  setBuildTool,
-  onOpenSettings,
-  onCancel,
-  onCreateProject,
-  onOpenProject,
-  onImportProject,
-  onSaveProject,
-  onExportProject,
-  importingProject,
+  generate, askAI, loading,
+  canGenerate, canAskAI, canSaveProject,
+  hasUnsavedChanges, importingProject,
+  theme, setTheme,
+  javaVersion, setJavaVersion,
+  springBootVersion, setSpringBootVersion,
+  projectName, setProjectName,
+  buildTool, setBuildTool,
+  onOpenSettings, onCancel,
+  onCreateProject, onOpenProject, onImportProject,
+  onSaveProject, onExportProject,
   onLogout,
-}: any) {
+}: TopbarProps) {
   type Step = "idle" | "unsaved" | "newProject" | "editProject";
   const [step, setStep] = useState<Step>("idle");
 
   const handleNewClick = () => {
-    if (hasUnsavedChanges) {
-      setStep("unsaved");
-    } else {
-      setStep("newProject");
-    }
+    if (hasUnsavedChanges) { setStep("unsaved"); } else { setStep("newProject"); }
   };
 
-  const handleSaveAndContinue = async () => {
-    await onSaveProject?.();
+  const handleSaveAndContinue = () => {
+    onSaveProject?.();
     setStep("newProject");
   };
 
-  const handleDiscardAndContinue = () => setStep("newProject");
-
-  const handleNewProjectConfirm = (cfg: NewProjectConfig) => {
+  const handleNewProjectConfirm = (cfg: JavaProjectConfig) => {
     onCreateProject?.();
-    setLanguage(cfg.language);
-    setFramework(cfg.framework);
+    setJavaVersion(cfg.javaVersion);
+    setSpringBootVersion(cfg.springBootVersion);
     setBuildTool(cfg.buildTool);
     setProjectName(cfg.projectName);
     setStep("idle");
   };
 
-  const handleEditProjectConfirm = (cfg: NewProjectConfig) => {
-    setLanguage(cfg.language);
-    setFramework(cfg.framework);
+  const handleEditProjectConfirm = (cfg: JavaProjectConfig) => {
+    setJavaVersion(cfg.javaVersion);
+    setSpringBootVersion(cfg.springBootVersion);
     setBuildTool(cfg.buildTool);
     setProjectName(cfg.projectName);
     setStep("idle");
   };
-
-  const closeAll = () => setStep("idle");
-
-  const langBadge = LANGUAGE_ICONS[language] || language.toUpperCase();
 
   return (
     <>
@@ -315,17 +288,8 @@ export default function Topbar({
             <DropdownMenu
               label="Open"
               items={[
-                {
-                  label: "Open Project",
-                  hint: "Load a saved .archbuilder.json file",
-                  onClick: onOpenProject,
-                },
-                {
-                  label: "Import Folder",
-                  hint: importingProject ? "Importing…" : "Scan an existing code directory",
-                  onClick: onImportProject,
-                  disabled: importingProject,
-                },
+                { label: "Open Project",   hint: "Load a saved .archbuilder.json file",      onClick: onOpenProject },
+                { label: "Import Folder",  hint: importingProject ? "Importing…" : "Scan an existing code directory", onClick: onImportProject, disabled: importingProject },
               ]}
             />
 
@@ -333,18 +297,8 @@ export default function Topbar({
               label="Save"
               disabled={!canSaveProject}
               items={[
-                {
-                  label: "Save Project",
-                  hint: "Save to .archbuilder.json — reopen in Arch Builder",
-                  onClick: onSaveProject,
-                  disabled: !canSaveProject,
-                },
-                {
-                  label: "Export as IDE Project",
-                  hint: "Download a ready-to-open zip with code, config & scaffold files",
-                  onClick: onExportProject,
-                  disabled: !canSaveProject,
-                },
+                { label: "Save Project",         hint: "Save to .archbuilder.json", onClick: onSaveProject,  disabled: !canSaveProject },
+                { label: "Export as IDE Project", hint: "Download ZIP with code, Docker, Terraform", onClick: onExportProject, disabled: !canSaveProject },
               ]}
             />
           </div>
@@ -356,24 +310,20 @@ export default function Topbar({
             {projectName
               ? <>
                   {projectName}
-                  {hasUnsavedChanges && (
-                    <span className="unsaved-dot" title="Unsaved changes">●</span>
-                  )}
+                  {hasUnsavedChanges && <span className="unsaved-dot" title="Unsaved changes">●</span>}
                 </>
               : <span className="topbar-project-placeholder">Untitled Project</span>
             }
-            <button
-              className="topbar-edit-btn"
-              onClick={() => setStep("editProject")}
-              title="Edit project settings"
-            >
+            <button className="topbar-edit-btn" onClick={() => setStep("editProject")} title="Edit project settings">
               ✎
             </button>
           </div>
           <div className="topbar-project-meta">
-            <span className="topbar-lang-badge">{langBadge}</span>
+            <span className="topbar-lang-badge">☕</span>
             <span className="topbar-meta-sep">·</span>
-            <span className="topbar-meta-text">{framework}</span>
+            <span className="topbar-meta-text">Java {javaVersion}</span>
+            <span className="topbar-meta-sep">·</span>
+            <span className="topbar-meta-text">Spring Boot {springBootVersion}</span>
             <span className="topbar-meta-sep">·</span>
             <span className="topbar-meta-text">{buildTool}</span>
           </div>
@@ -386,18 +336,12 @@ export default function Topbar({
           </button>
 
           {loading ? (
-            <button className="btn btn-danger" onClick={onCancel}>
-              Stop
-            </button>
+            <button className="btn btn-danger" onClick={onCancel}>Stop</button>
           ) : (
-            <button className="btn btn-primary" onClick={askAI} disabled={!canAskAI}>
-              Ask AI
-            </button>
+            <button className="btn btn-primary" onClick={askAI} disabled={!canAskAI}>Ask AI</button>
           )}
 
-          <button className="btn" onClick={onOpenSettings} title="Settings">
-            Settings
-          </button>
+          <button className="btn" onClick={onOpenSettings} title="Settings">Settings</button>
 
           <button
             className="btn topbar-theme-toggle"
@@ -407,9 +351,7 @@ export default function Topbar({
             {theme === "dark" ? "Light Mode" : "Dark Mode"}
           </button>
 
-          {onLogout && (
-            <button className="btn" onClick={onLogout} title="Logout">Logout</button>
-          )}
+          {onLogout && <button className="btn" onClick={onLogout}>Logout</button>}
         </div>
       </div>
 
@@ -417,26 +359,26 @@ export default function Topbar({
         <UnsavedChangesModal
           projectName={projectName}
           onSaveAndContinue={handleSaveAndContinue}
-          onDiscardAndContinue={handleDiscardAndContinue}
-          onCancel={closeAll}
+          onDiscardAndContinue={() => setStep("newProject")}
+          onCancel={() => setStep("idle")}
         />
       )}
 
       {step === "newProject" && (
-        <NewProjectModal
-          initial={{ projectName: "", language, framework, buildTool }}
+        <ProjectConfigModal
+          initial={{ projectName: "", javaVersion, springBootVersion, buildTool }}
           onConfirm={handleNewProjectConfirm}
-          onClose={closeAll}
+          onClose={() => setStep("idle")}
         />
       )}
 
       {step === "editProject" && (
-        <NewProjectModal
+        <ProjectConfigModal
           title="Edit Project Settings"
           confirmLabel="Save Settings →"
-          initial={{ projectName, language, framework, buildTool }}
+          initial={{ projectName, javaVersion, springBootVersion, buildTool }}
           onConfirm={handleEditProjectConfirm}
-          onClose={closeAll}
+          onClose={() => setStep("idle")}
         />
       )}
     </>

@@ -166,62 +166,6 @@ const CLASS_MAPS: Record<string, ClassNode[]> = {
     { abbr: "Exp",   label: "SpanExporter",  role: "gateway"    },
   ],
 
-  // ── FRONTEND ───────────────────────────────────────────────────────────────
-  frontend_app: [
-    { abbr: "App",   label: "AppRoot",       role: "controller" },
-    { abbr: "Prv",   label: "Providers",     role: "config"     },
-    { abbr: "Rtr",   label: "Router",        role: "gateway"    },
-  ],
-  form_module: [
-    { abbr: "Form",  label: "FormComponent", role: "controller" },
-    { abbr: "Scm",   label: "Validation",    role: "config"     },
-    { abbr: "Hook",  label: "useForm",       role: "service"    },
-  ],
-  data_table: [
-    { abbr: "Tbl",   label: "TableComponent",role: "controller" },
-    { abbr: "Col",   label: "ColumnDefs",    role: "config"     },
-    { abbr: "Pg",    label: "Pagination",    role: "service"    },
-  ],
-  state_store: [
-    { abbr: "St",    label: "Store",         role: "service"    },
-    { abbr: "Act",   label: "Actions",       role: "service"    },
-    { abbr: "Sel",   label: "Selectors",     role: "config"     },
-  ],
-  client_api: [
-    { abbr: "Cli",   label: "ApiClient",     role: "gateway"    },
-    { abbr: "Int",   label: "Interceptors",  role: "middleware"  },
-    { abbr: "Hook",  label: "QueryHooks",    role: "service"    },
-  ],
-  router: [
-    { abbr: "Rtr",   label: "Router",        role: "gateway"    },
-    { abbr: "Grd",   label: "AuthGuard",     role: "middleware"  },
-    { abbr: "Lazy",  label: "LazyLoader",    role: "config"     },
-  ],
-  auth_ui: [
-    { abbr: "Page",  label: "AuthPage",      role: "controller" },
-    { abbr: "Form",  label: "LoginForm",     role: "service"    },
-    { abbr: "Ctx",   label: "AuthContext",   role: "config"     },
-  ],
-  dashboard_page: [
-    { abbr: "Page",  label: "DashboardPage", role: "controller" },
-    { abbr: "Wgt",   label: "Widgets",       role: "service"    },
-    { abbr: "Data",  label: "DataHooks",     role: "gateway"    },
-  ],
-  modal_system: [
-    { abbr: "Ctx",   label: "ModalContext",  role: "config"     },
-    { abbr: "Port",  label: "Portal",        role: "gateway"    },
-    { abbr: "Hdl",   label: "ModalHost",     role: "controller" },
-  ],
-  design_system: [
-    { abbr: "Tkn",   label: "Tokens",        role: "config"     },
-    { abbr: "Cmp",   label: "Components",    role: "service"    },
-    { abbr: "Doc",   label: "Storybook",     role: "config"     },
-  ],
-  hooks_layer: [
-    { abbr: "Qry",   label: "QueryHooks",    role: "service"    },
-    { abbr: "Mut",   label: "MutationHooks", role: "service"    },
-    { abbr: "Util",  label: "UtilHooks",     role: "config"     },
-  ],
 };
 
 export function getClassMap(nodeType: string): ClassNode[] | null {

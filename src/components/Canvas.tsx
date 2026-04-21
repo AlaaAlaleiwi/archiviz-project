@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useEffect } from "react";
 import Node from "./Node";
 import type { Graph, NodeData } from "../types";
 
@@ -88,13 +88,21 @@ export default function Canvas({
   onResetCamera,
   onClearCanvas,
 }: Props) {
+  // Attach wheel listener as non-passive so preventDefault() works (React 19 registers onWheel as passive)
+  useEffect(() => {
+    const el = canvasRef.current;
+    if (!el) return;
+    const handler = (e: WheelEvent) => { e.preventDefault(); onCanvasWheel(e as any); };
+    el.addEventListener("wheel", handler, { passive: false });
+    return () => el.removeEventListener("wheel", handler);
+  }, [canvasRef, onCanvasWheel]);
+
   return (
     <div
       ref={canvasRef}
       className="canvas"
       onDrop={onDrop}
       onDragOver={onDragOver}
-      onWheel={onCanvasWheel}
       onPointerMove={(e) => moveWire(e.clientX, e.clientY)}
       onPointerUp={() => { /* wire cancelled by onCanvasPointerDown or port pointerUp */ }}
       onPointerDown={onCanvasPointerDown}

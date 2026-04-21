@@ -2,6 +2,7 @@ import "../styles.css";
 import { useRef, useState, useEffect } from "react";
 import type { NodeData } from "../types";
 import { hasConfig, summarizeConfig } from "../utils/componentConfigs";
+import { getClassMap, ROLE_COLOR, type ClassNode } from "../utils/classMap";
 
 interface Props {
   node: NodeData;
@@ -100,6 +101,7 @@ export default function Node({
   const [editing, setEditing] = useState(false);
   const [value, setValue] = useState(node.name);
   const inputRef = useRef<HTMLInputElement>(null);
+  const pointerOrigin = useRef<{ x: number; y: number } | null>(null);
 
   useEffect(() => { if (editing) inputRef.current?.focus(); }, [editing]);
   useEffect(() => { setValue(node.name); }, [node.name]);
@@ -115,14 +117,23 @@ export default function Node({
   const configurable  = hasConfig(node.type);
   const configured    = configurable && !!node.config && Object.keys(node.config).length > 0;
   const configSummary = configured ? summarizeConfig(node.config!) : null;
+  const classMap      = getClassMap(node.type);
 
   return (
     <div
       id={`node-${node.id}`}
-      className={`node ${selected ? "selected" : ""} ${configured ? "node--configured" : ""}`}
+      className={`node ${selected ? "selected" : ""} ${configured ? "node--configured" : ""} ${hasCode ? "node--has-code" : ""}`}
       style={{ transform: `translate(${node.x}px, ${node.y}px)` }}
-      onPointerDown={(e) => onPointerDown(e, node)}
+      onPointerDown={(e) => { pointerOrigin.current = { x: e.clientX, y: e.clientY }; onPointerDown(e, node); }}
       onDoubleClick={(e) => { e.stopPropagation(); setEditing(true); }}
+      onClick={(e) => {
+        if (!hasCode || !pointerOrigin.current) return;
+        const dx = e.clientX - pointerOrigin.current.x;
+        const dy = e.clientY - pointerOrigin.current.y;
+        if (dx * dx + dy * dy > 16) return;
+        e.stopPropagation();
+        onViewCode(node.id);
+      }}
     >
       {/* ── header ── */}
       <div className="node-header">
@@ -169,16 +180,25 @@ export default function Node({
         </button>
       )}
 
-      {/* ── view code button ── */}
-      {hasCode && (
-        <button
-          className="node-code-btn"
-          onClick={(e) => { e.stopPropagation(); onViewCode(node.id); }}
-          onPointerDown={(e) => e.stopPropagation()}
-          title="View generated code"
-        >
-          {"</>"}
-        </button>
+      {/* ── has-code indicator ── */}
+      {hasCode && <div className="node-code-indicator" title="Click to inspect generated code" />}
+
+      {/* ── class map ── */}
+      {classMap && (
+        <div className="node-classmap">
+          {classMap.map((cls: ClassNode, i: number) => (
+            <span key={cls.abbr} className="node-classmap-item">
+              {i > 0 && <span className="node-classmap-arrow">→</span>}
+              <span
+                className="node-classmap-badge"
+                style={{ borderColor: ROLE_COLOR[cls.role], color: ROLE_COLOR[cls.role] }}
+                title={cls.label}
+              >
+                {cls.abbr}
+              </span>
+            </span>
+          ))}
+        </div>
       )}
 
       {/* ── ports ── */}

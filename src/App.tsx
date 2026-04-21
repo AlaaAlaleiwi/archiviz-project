@@ -9,8 +9,9 @@ import Topbar from "./components/Topbar";
 import Settings, { type AISettings } from "./components/Settings";
 import NodeConfigModal from "./components/NodeConfigModal";
 import NodeCodeModal from "./components/NodeCodeModal";
+import ChatPanel from "./components/ChatPanel";
 
-import type { Graph, NodeType, Camera, Language, NodeData, Edge } from "./types";
+import type { Graph, NodeType, Camera, Language, NodeData, Edge, JavaVersion, SpringBootVersion, BuildTool } from "./types";
 
 import { AIService } from "./services/AIService";
 import { GraphService } from "./services/GraphService";
@@ -23,7 +24,7 @@ import {
   buildNodeImplementationPrompt,
   getGeneratedFilePath,
 } from "./utils/promptBuilder";
-import { cleanAIResponse } from "./utils/stringUtils";
+import { parseMultiFileResponse } from "./utils/stringUtils";
 
 const genId = () => Math.random().toString(36).slice(2, 10);
 
@@ -54,21 +55,13 @@ const MIN_SCALE = 0.5;
 const MAX_SCALE = 2.4;
 const ZOOM_STEP = 1.14;
 
-const BUILD_TOOLS_BY_LANGUAGE: Record<Language, string[]> = {
-  javascript: ["npm", "pnpm", "yarn"],
-  typescript: ["npm", "pnpm", "yarn"],
-  python: ["pip", "poetry", "uv"],
-  java: ["maven", "gradle"],
-  cpp: ["cmake", "make", "meson"],
-};
-
 type SavedProjectFile = {
   version: 1;
   savedAt: string;
   projectName: string;
-  language: Language;
-  framework: string;
-  buildTool: string;
+  javaVersion: JavaVersion;
+  springBootVersion: SpringBootVersion;
+  buildTool: BuildTool;
   prompt: string;
   graph: Graph;
 };
@@ -92,15 +85,16 @@ export default function App() {
     return null;
   });
 
-  const [language, setLanguage] = useState<Language>("javascript");
-  const [framework, setFramework] = useState("Spring Boot");
+  const language: Language = "java";
+  const [javaVersion, setJavaVersion] = useState<JavaVersion>("21");
+  const [springBootVersion, setSpringBootVersion] = useState<SpringBootVersion>("3.4");
+  const [buildTool, setBuildTool] = useState<BuildTool>("maven");
 
   const [graph, setGraph] = useState<Graph>({ nodes: [], edges: [] });
 
   const [prompt, setPrompt] = useState("");
 
   const [projectName, setProjectName] = useState("architecture-app");
-  const [buildTool, setBuildTool] = useState("npm");
   const [loading, setLoading] = useState(false);
   const [importingProject, setImportingProject] = useState(false);
   const [projectFileHandle, setProjectFileHandle] = useState<FileSystemFileHandle | null>(null);
@@ -111,10 +105,13 @@ export default function App() {
   const [drag, setDrag] = useState<DragState>(null);
   const [pan, setPan] = useState<PanState>(null);
   const [showSettings, setShowSettings] = useState(false);
+  const [showChat, setShowChat] = useState(false);
+  const [chatMinimized, setChatMinimized] = useState(false);
+  const [chatUnread, setChatUnread] = useState(0);
   const [configuringNodeId, setConfiguringNodeId] = useState<string | null>(null);
   const [viewingNodeId, setViewingNodeId] = useState<string | null>(null);
-  const [nodeCode, setNodeCode] = useState<Record<string, { path: string; content: string }>>({});
-  const [generationProgress, setGenerationProgress] = useState<{ current: number; total: number; nodeName: string } | null>(null);
+  const [nodeCode, setNodeCode] = useState<Record<string, { path: string; content: string }[]>>({});
+  const [generationProgress, setGenerationProgress] = useState<{ current: number; total: number; nodeName: string; streamText: string } | null>(null);
   const [genError, setGenError] = useState<{ message: string; failedNodes?: string[] } | null>(null);
 
   const [camera, setCamera] = useState<Camera>({ x: 120, y: 72, scale: 1 });
@@ -408,9 +405,7 @@ export default function App() {
   );
 
   const onCanvasWheel = useCallback(
-    (e: React.WheelEvent<HTMLDivElement>) => {
-      e.preventDefault();
-
+    (e: { deltaY: number; clientX: number; clientY: number }) => {
       const scaleFactor = e.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP;
       zoomAtPoint(e.clientX, e.clientY, camera.scale * scaleFactor);
     },
@@ -449,9 +444,9 @@ export default function App() {
 
   const createNewProject = useCallback(() => {
     setProjectName("architecture-app");
-    setLanguage("javascript");
-    setFramework("Node.js");
-    setBuildTool("npm");
+    setJavaVersion("21");
+    setSpringBootVersion("3.4");
+    setBuildTool("maven");
     setGraph({ nodes: [], edges: [] });
     setPrompt("");
     setSelectedIds([]);
@@ -465,8 +460,8 @@ export default function App() {
 
   const applyProjectData = useCallback((parsed: SavedProjectFile) => {
     setProjectName(parsed.projectName);
-    setLanguage(parsed.language as Language);
-    setFramework(parsed.framework);
+    setJavaVersion(parsed.javaVersion);
+    setSpringBootVersion(parsed.springBootVersion);
     setBuildTool(parsed.buildTool);
     setPrompt(parsed.prompt);
     setGraph(parsed.graph);
@@ -484,8 +479,8 @@ export default function App() {
     Array.isArray(parsed.graph.nodes) &&
     Array.isArray(parsed.graph.edges) &&
     typeof parsed.projectName === "string" &&
-    typeof parsed.language === "string" &&
-    typeof parsed.framework === "string" &&
+    typeof parsed.javaVersion === "string" &&
+    typeof parsed.springBootVersion === "string" &&
     typeof parsed.buildTool === "string" &&
     typeof parsed.prompt === "string"
   );
@@ -528,8 +523,6 @@ export default function App() {
         const importedProject = await projectImportService.importFromFiles(files);
 
         setProjectName(importedProject.projectName);
-        setLanguage(importedProject.language);
-        setFramework(importedProject.framework);
         setGraph(importedProject.graph);
         setSelectedIds([]);
         setSelectedEdgeId(null);
@@ -539,8 +532,8 @@ export default function App() {
         setPrompt(
           buildAIPrompt(
             importedProject.graph,
-            importedProject.language,
-            importedProject.framework,
+            javaVersion,
+            springBootVersion,
             importedProject.projectName
           )
         );
@@ -552,7 +545,7 @@ export default function App() {
         e.target.value = "";
       }
     },
-    [projectImportService]
+    [projectImportService, javaVersion, springBootVersion]
   );
 
   // Fallback for browsers without File System Access API
@@ -576,8 +569,8 @@ export default function App() {
       version: 1,
       savedAt: new Date().toISOString(),
       projectName,
-      language,
-      framework,
+      javaVersion,
+      springBootVersion,
       buildTool,
       prompt,
       graph,
@@ -613,30 +606,28 @@ export default function App() {
 
     // Fallback for browsers without File System Access API
     saveAs(new Blob([json], { type: "application/json;charset=utf-8" }), `${projectName || "project"}.archbuilder.json`);
-  }, [buildTool, framework, graph, language, projectName, prompt, projectFileHandle]);
+  }, [buildTool, javaVersion, springBootVersion, graph, projectName, prompt, projectFileHandle]);
 
   /* =======================
      EXPORT TO IDE ZIP
   ======================= */
 
   const exportProject = useCallback(async () => {
-    // 1. Collect AI-generated source files
-    const generatedFiles = Object.values(nodeCode).map(({ path, content }) => ({ path, content }));
+    // 1. Collect AI-generated source files (each node now stores an array of files)
+    const generatedFiles = Object.values(nodeCode).flat();
 
-    // 2. Build scaffold (package.json, tsconfig, .gitignore, README, .vscode/, etc.)
+    // 2. Build scaffold (pom.xml/build.gradle, Dockerfile, docker-compose, Terraform, etc.)
     const scaffoldFiles = scaffoldService.generate({
       projectName,
-      language,
-      framework,
+      javaVersion,
+      springBootVersion,
       buildTool,
       generatedFiles,
     });
 
     // 3. Embed the prompt as a reference file
     const promptFile = prompt.trim()
-      ? [{ path: "arch-prompt.md", content: `# Architecture Prompt
-
-${prompt}` }]
+      ? [{ path: "arch-prompt.md", content: `# Architecture Prompt\n\n${prompt}` }]
       : [];
 
     // 4. Embed the .archbuilder.json so the project can be reopened in Arch Builder
@@ -646,8 +637,8 @@ ${prompt}` }]
         version: 1,
         savedAt: new Date().toISOString(),
         projectName,
-        language,
-        framework,
+        javaVersion,
+        springBootVersion,
         buildTool,
         prompt,
         graph,
@@ -664,7 +655,7 @@ ${prompt}` }]
     const dedupedFiles = Array.from(fileMap.entries()).map(([path, content]) => ({ path, content }));
 
     await zipService.download(dedupedFiles, projectName);
-  }, [buildTool, framework, graph, language, nodeCode, projectName, prompt, scaffoldService, zipService]);
+  }, [buildTool, javaVersion, springBootVersion, graph, nodeCode, projectName, prompt, scaffoldService, zipService]);
 
   /* =======================
      PROMPT
@@ -676,7 +667,7 @@ ${prompt}` }]
       return;
     }
 
-    const p = buildAIPrompt(graph, language, framework, projectName);
+    const p = buildAIPrompt(graph, javaVersion, springBootVersion, projectName);
     setPrompt(p);
   };
 
@@ -696,32 +687,43 @@ ${prompt}` }]
     const nodes = graphService.getNodes();
     setGenerationProgress({ current: 0, total: nodes.length, nodeName: "" });
 
-    const files: { path: string; content: string }[] = [];
-    const newCode: Record<string, { path: string; content: string }> = {};
+    const allFiles: { path: string; content: string }[] = [];
+    const newCode: Record<string, { path: string; content: string }[]> = {};
     const failedNodes: string[] = [];
 
     try {
       for (let i = 0; i < nodes.length; i++) {
         const node = nodes[i];
-        setGenerationProgress({ current: i + 1, total: nodes.length, nodeName: node.name });
+        setGenerationProgress({ current: i + 1, total: nodes.length, nodeName: node.name, streamText: "" });
 
         try {
-          const nodePrompt = buildNodeImplementationPrompt(graph, node, language, framework, projectName);
-          const raw = await ai.call(nodePrompt, controller.signal);
-          const content = cleanAIResponse(raw);
-          const path = getGeneratedFilePath(language, node);
-          files.push({ path, content });
-          newCode[node.id] = { path, content };
+          let raw = "";
+
+          const nodePrompt = buildNodeImplementationPrompt(graph, node, javaVersion, springBootVersion, projectName, buildTool);
+          raw = await ai.callStream(
+            [{ role: "user", content: nodePrompt }],
+            (token) => {
+              setGenerationProgress(prev =>
+                prev ? { ...prev, streamText: prev.streamText + token } : prev
+              );
+            },
+            controller.signal
+          );
+
+          const fallbackPath = getGeneratedFilePath(node, projectName);
+          const nodeFiles = parseMultiFileResponse(raw, fallbackPath);
+          allFiles.push(...nodeFiles);
+          newCode[node.id] = nodeFiles;
+          setNodeCode(prev => ({ ...prev, [node.id]: nodeFiles }));
         } catch (nodeErr: any) {
-          if (nodeErr?.name === "AbortError") throw nodeErr; // bubble up — user cancelled
+          if (nodeErr?.name === "AbortError") throw nodeErr;
           console.error(`[generate] ${node.name}:`, nodeErr);
           failedNodes.push(node.name);
         }
       }
 
       if (Object.keys(newCode).length > 0) {
-        setNodeCode(prev => ({ ...prev, ...newCode }));
-        await zipService.download(files, projectName);
+        await zipService.download(allFiles, projectName);
       }
 
       if (failedNodes.length > 0) {
@@ -749,12 +751,6 @@ ${prompt}` }]
   useEffect(() => {
     return () => abortRef.current?.abort();
   }, []);
-
-  useEffect(() => {
-    const supportedBuildTools = BUILD_TOOLS_BY_LANGUAGE[language];
-    if (supportedBuildTools.includes(buildTool)) return;
-    setBuildTool(supportedBuildTools[0]);
-  }, [buildTool, language]);
 
   useEffect(() => {
     if (!selectedEdgeId) return;
@@ -815,6 +811,9 @@ ${prompt}` }]
     };
   }, [completeWireFromPointer, drag, wire, pan, movePointerInteraction]);
 
+  // suppress unused warning — language is kept for potential future use
+  void language;
+
   /* =======================
      UI
   ======================= */
@@ -848,10 +847,10 @@ ${prompt}` }]
         importingProject={importingProject}
         theme={theme}
         setTheme={setTheme}
-        language={language}
-        setLanguage={setLanguage}
-        framework={framework}
-        setFramework={setFramework}
+        javaVersion={javaVersion}
+        setJavaVersion={setJavaVersion}
+        springBootVersion={springBootVersion}
+        setSpringBootVersion={setSpringBootVersion}
         projectName={projectName}
         setProjectName={setProjectName}
         buildTool={buildTool}
@@ -866,7 +865,7 @@ ${prompt}` }]
       />
 
       <div className="main">
-        <Palette framework={framework} />
+        <Palette />
 
         <Canvas
           canvasRef={canvasRef}
@@ -924,15 +923,17 @@ ${prompt}` }]
       })()}
 
       {viewingNodeId && (() => {
-        const node = graph.nodes.find(n => n.id === viewingNodeId);
-        const entry = nodeCode[viewingNodeId];
-        return node && entry ? (
+        const node  = graph.nodes.find(n => n.id === viewingNodeId);
+        const files = nodeCode[viewingNodeId];
+        return node && files ? (
           <NodeCodeModal
             nodeName={node.name}
             nodeType={node.type}
-            filePath={entry.path}
-            code={entry.content}
+            files={files}
             onClose={() => setViewingNodeId(null)}
+            onSave={(updatedFiles) =>
+              setNodeCode(prev => ({ ...prev, [viewingNodeId]: updatedFiles }))
+            }
           />
         ) : null;
       })()}
@@ -952,7 +953,43 @@ ${prompt}` }]
               style={{ width: `${(generationProgress.current / generationProgress.total) * 100}%` }}
             />
           </div>
+          {generationProgress.streamText && (
+            <pre className="gen-progress-stream">
+              {generationProgress.streamText.slice(-800)}
+            </pre>
+          )}
         </div>
+      )}
+
+      {/* Floating chat button — visible when chat is closed or minimized */}
+      {(!showChat || chatMinimized) && (
+        <div className="chat-fab-wrap">
+          <button
+            className="chat-fab"
+            onClick={() => {
+              setShowChat(true);
+              setChatMinimized(false);
+              setChatUnread(0);
+            }}
+            title="Open AI Chat"
+          >
+            💬
+          </button>
+          {chatUnread > 0 && (
+            <span className="chat-fab-badge">{chatUnread > 9 ? "9+" : chatUnread}</span>
+          )}
+        </div>
+      )}
+
+      {showChat && (
+        <ChatPanel
+          ai={ai}
+          minimized={chatMinimized}
+          onMinimize={() => setChatMinimized(true)}
+          onMaximize={() => { setChatMinimized(false); setChatUnread(0); }}
+          onClose={() => { setShowChat(false); setChatMinimized(false); setChatUnread(0); }}
+          onNewMessage={() => setChatUnread(v => v + 1)}
+        />
       )}
 
       {genError && (

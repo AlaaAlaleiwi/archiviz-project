@@ -1,10 +1,21 @@
-export type AIProvider = "openai" | "anthropic" | "local";
+import { CHAT_SYSTEM_PROMPT } from "../utils/systemPrompts";
+
+export interface ChatMessage {
+  role: "system" | "user" | "assistant";
+  content: string;
+}
+
+export type AIProvider = "openai" | "anthropic" | "local" | "spring-boot";
 
 export interface AISettings {
   provider: AIProvider;
-  apiKey: string;
+  apiKey?: string;
   baseUrl: string;
   model: string;
+  temperature?: number;
+  maxTokens?: number;
+  systemPrompt?: string;
+  stream?: boolean;
 }
 
 export class AIService {
@@ -14,153 +25,168 @@ export class AIService {
     this.settings = settings;
   }
 
-  private get isOpenAI()     { return this.settings.provider === "openai"; }
-  private get isAnthropic()  { return this.settings.provider === "anthropic"; }
+  // ── Chat with full in-memory history (works for all providers) ───────────
+
+  async chatStream(
+    history: ChatMessage[],
+    message: string,
+    onToken: (token: string) => void,
+    signal?: AbortSignal
+  ): Promise<string> {
+    const systemPrompt = this.settings.systemPrompt || CHAT_SYSTEM_PROMPT;
+    const messages: ChatMessage[] = [
+      { role: "system", content: systemPrompt },
+      ...history,
+      { role: "user", content: message },
+    ];
+    return this.callStream(messages, onToken, signal);
+  }
+
+  // ── Provider-aware streaming ──────────────────────────────────────────────
+
+  async callStream(
+    messages: ChatMessage[],
+    onToken: (token: string) => void,
+    signal?: AbortSignal
+  ): Promise<string> {
+    const res = await fetch(this.chatUrl(), {
+      method: "POST",
+      headers: this.headers(),
+      body: this.buildBody(messages, true),
+      signal,
+    });
+
+    if (!res.ok || !res.body) {
+      const errText = await res.text().catch(() => "");
+      throw new Error(`Request failed ${res.status}${errText ? ": " + errText : ""}`);
+    }
+
+    // Anthropic returns a single JSON response even for streaming requests here
+    if (this.settings.provider === "anthropic") {
+      const data = await res.json();
+      const text = data?.content?.[0]?.text || "";
+      if (text) onToken(text);
+      return text;
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let fullText = "";
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+
+      const chunk = decoder.decode(value);
+      for (const line of chunk.split("\n")) {
+        const data = line.startsWith("data:") ? line.slice(5).trim() : "";
+        if (!data || data === "[DONE]") continue;
+        try {
+          const json = JSON.parse(data);
+          const token = json?.choices?.[0]?.delta?.content || "";
+          if (token) { fullText += token; onToken(token); }
+        } catch {}
+      }
+    }
+
+    return fullText;
+  }
+
+  // ── Single-shot call (used by code generation) ────────────────────────────
+
+  async call(messages: ChatMessage[], signal?: AbortSignal): Promise<string> {
+    const res = await fetch(this.chatUrl(), {
+      method: "POST",
+      headers: this.headers(),
+      body: this.buildBody(messages, false),
+      signal,
+    });
+
+    if (!res.ok) {
+      const errText = await res.text().catch(() => "");
+      throw new Error(`Request failed ${res.status}${errText ? ": " + errText : ""}`);
+    }
+
+    if (this.settings.provider === "spring-boot") {
+      const raw = await res.text();
+      try { return this.extractContent(JSON.parse(raw)); } catch { return raw; }
+    }
+
+    return this.extractContent(await res.json());
+  }
+
+  async healthCheck(): Promise<void> {
+    const result = await this.call(
+      [{ role: "user", content: "hi" }],
+      AbortSignal.timeout(10000)
+    );
+    if (!result) throw new Error("Empty response from server");
+  }
+
+  // ── Private helpers ───────────────────────────────────────────────────────
 
   private chatUrl(): string {
-    if (this.isOpenAI)    return "https://api.openai.com/v1/chat/completions";
-    if (this.isAnthropic) return "https://api.anthropic.com/v1/messages";
+    if (this.settings.provider === "anthropic") return "https://api.anthropic.com/v1/messages";
+    if (this.settings.provider === "spring-boot") return `${this.settings.baseUrl}/api/ai/chat`;
     return `${this.settings.baseUrl}/v1/chat/completions`;
   }
 
-  private chatHeaders(): Record<string, string> {
-    if (this.isAnthropic) {
-      return {
-        "Content-Type":         "application/json",
-        "x-api-key":            this.settings.apiKey,
-        "anthropic-version":    "2023-06-01",
-        "anthropic-dangerous-direct-browser-access": "true",
-      };
-    }
+  private headers(): Record<string, string> {
     const h: Record<string, string> = { "Content-Type": "application/json" };
-    if (this.isOpenAI) h["Authorization"] = `Bearer ${this.settings.apiKey}`;
+    if (this.settings.provider === "openai")
+      h["Authorization"] = `Bearer ${this.settings.apiKey}`;
+    if (this.settings.provider === "anthropic") {
+      h["x-api-key"] = this.settings.apiKey!;
+      h["anthropic-version"] = "2023-06-01";
+    }
     return h;
   }
 
-  private chatBody(prompt: string): string {
-    const model = this.settings.model;
-    if (this.isAnthropic) {
+  private buildBody(messages: ChatMessage[], stream: boolean): string {
+    const temp = this.settings.temperature ?? 0.2;
+    const maxTok = this.settings.maxTokens;
+
+    if (this.settings.provider === "anthropic") {
+      // Anthropic uses system as a top-level field, not inside messages
+      const systemMsg = messages.find(m => m.role === "system");
+      const rest = messages.filter(m => m.role !== "system");
+      const body: Record<string, unknown> = {
+        model: this.settings.model,
+        max_tokens: maxTok ?? 4096,
+        messages: rest,
+      };
+      if (systemMsg) body["system"] = systemMsg.content;
+      return JSON.stringify(body);
+    }
+
+    if (this.settings.provider === "spring-boot") {
+      const userMsg = [...messages].reverse().find(m => m.role === "user");
       return JSON.stringify({
-        model,
-        max_tokens: 4096,
-        messages: [{ role: "user", content: prompt }],
+        message: userMsg?.content ?? "",
+        model: this.settings.model || undefined,
+        temperature: temp,
+        maxTokens: maxTok,
       });
     }
-    return JSON.stringify({
-      model,
-      messages: [{ role: "user", content: prompt }],
-      temperature: 0.2,
-      max_tokens: 4096,
-    });
+
+    const body: Record<string, unknown> = {
+      model: this.settings.model,
+      messages,
+      temperature: temp,
+      stream,
+    };
+    if (maxTok) body["max_tokens"] = maxTok;
+    return JSON.stringify(body);
   }
 
-  private parseResponse(data: any): string {
-    if (this.isAnthropic) {
-      return data?.content?.[0]?.text ?? "";
-    }
-    return data?.choices?.[0]?.message?.content ?? "";
-  }
-
-  /** Lightweight connectivity + auth check. Throws with a human-readable message on failure. */
-  async healthCheck(): Promise<void> {
-    // Anthropic: send a tiny real message — no public /models endpoint in browser
-    if (this.isAnthropic) {
-      if (!this.settings.apiKey?.trim()) throw new Error("API key is required.");
-      let res: Response;
-      try {
-        res = await fetch("https://api.anthropic.com/v1/messages", {
-          method: "POST",
-          headers: this.chatHeaders(),
-          body: JSON.stringify({
-            model: this.settings.model || "claude-3-haiku-20240307",
-            max_tokens: 10,
-            messages: [{ role: "user", content: "hi" }],
-          }),
-          signal: AbortSignal.timeout(10000),
-        });
-      } catch (err: any) {
-        if (err?.name === "TimeoutError") throw new Error("Connection timed out reaching Anthropic.");
-        throw new Error("Cannot reach Anthropic API. Check your internet connection.");
-      }
-      if (res.status === 401) throw new Error("Invalid Anthropic API key.");
-      if (res.status === 403) throw new Error("API key doesn't have access to this model.");
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body?.error?.message ?? `Anthropic returned ${res.status}.`);
-      }
-      return;
-    }
-
-    // OpenAI + local: hit /v1/models
-    const url = this.isOpenAI
-      ? "https://api.openai.com/v1/models"
-      : `${this.settings.baseUrl}/v1/models`;
-    const headers: Record<string, string> = {};
-    if (this.isOpenAI) headers["Authorization"] = `Bearer ${this.settings.apiKey}`;
-
-    let res: Response;
-    try {
-      res = await fetch(url, { method: "GET", headers, signal: AbortSignal.timeout(6000) });
-    } catch (err: any) {
-      if (err?.name === "TimeoutError") throw new Error("Connection timed out. Is the server running?");
-      throw new Error(
-        this.isOpenAI
-          ? "Cannot reach OpenAI. Check your internet connection."
-          : `Cannot reach ${this.settings.baseUrl}. Is LM Studio / Ollama running with CORS enabled?`
-      );
-    }
-    if (res.status === 401) throw new Error(this.isOpenAI ? "Invalid OpenAI API key." : "Server returned 401 — check your credentials.");
-    if (!res.ok) throw new Error(`Server responded with ${res.status} ${res.statusText}.`);
-  }
-
-  async call(prompt: string, signal: AbortSignal): Promise<string> {
-    // Combine user abort with a 2-minute generation timeout
-    const ac = new AbortController();
-    const timer = setTimeout(
-      () => ac.abort(new DOMException("Generation timed out after 2 minutes.", "TimeoutError")),
-      120_000,
+  private extractContent(data: unknown): string {
+    if (typeof data !== "object" || data === null) return "";
+    const d = data as Record<string, unknown>;
+    return (
+      (d?.choices as any)?.[0]?.message?.content ||
+      (d?.choices as any)?.[0]?.delta?.content ||
+      (d?.content as any)?.[0]?.text ||
+      ""
     );
-    signal.addEventListener("abort", () => ac.abort(signal.reason), { once: true });
-
-    let res: Response;
-    try {
-      res = await fetch(this.chatUrl(), {
-        method: "POST",
-        headers: this.chatHeaders(),
-        body: this.chatBody(prompt),
-        signal: ac.signal,
-      });
-    } catch (err: any) {
-      clearTimeout(timer);
-      if (err?.name === "AbortError")   throw err;
-      if (err?.name === "TimeoutError") throw new Error("Generation timed out after 2 minutes. Try a smaller batch.");
-      throw new Error(`Network error — cannot reach ${this.isAnthropic ? "Anthropic" : this.isOpenAI ? "OpenAI" : "the local server"}: ${err?.message ?? "unknown"}`);
-    } finally {
-      clearTimeout(timer);
-    }
-
-    if (!res.ok) {
-      const body = await res.json().catch(() => ({}));
-      const msg: string = body?.error?.message ?? body?.message ?? "";
-
-      if (res.status === 401) throw new Error("Invalid API key — check your AI settings.");
-      if (res.status === 403) throw new Error("Access denied — your API key may not have permission for this model.");
-      if (res.status === 429) {
-        const retryAfter = res.headers.get("retry-after");
-        throw new Error(`Rate limit reached.${retryAfter ? ` Retry after ${retryAfter}s.` : " Wait a moment and try again."}`);
-      }
-      if (res.status === 400 && /context|token|length/i.test(msg)) {
-        throw new Error("Prompt exceeds model context limit. Try reducing the number of nodes or switching to a larger-context model.");
-      }
-      if (res.status === 413) throw new Error("Request too large for this model.");
-      if (res.status === 503 || res.status === 529) throw new Error("AI provider is overloaded — try again in a moment.");
-      if (res.status === 500) throw new Error(`AI provider internal error (500).${msg ? " " + msg : ""}`);
-      throw new Error(msg || `AI provider returned HTTP ${res.status} ${res.statusText}.`);
-    }
-
-    const data = await res.json();
-    const result = this.parseResponse(data);
-    if (!result?.trim()) throw new Error("AI returned an empty response. Try again.");
-    return result;
   }
 }

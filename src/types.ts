@@ -47,4 +47,10 @@ export type Camera = {
   scale: number;
 
 };
-export type Language = "javascript" | "typescript" | "python" | "java" | "cpp";
+export type Language = "java";
+
+export type JavaVersion = "17" | "21" | "25";
+
+export type SpringBootVersion = "3.2" | "3.3" | "3.4";
+
+export type BuildTool = "maven" | "gradle";

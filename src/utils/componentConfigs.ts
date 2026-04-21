@@ -92,17 +92,17 @@ const configs: Record<string, ComponentConfigSchema> = {
 
   database: {
     fields: [
-      { key: "engine",      label: "Database Engine",  type: "select", options: ["PostgreSQL", "MySQL", "SQLite", "SQL Server", "Oracle"], default: "PostgreSQL" },
-      { key: "orm",         label: "ORM / Query",      type: "select", options: ["Prisma", "TypeORM", "Drizzle", "Sequelize", "Knex", "Raw SQL"], default: "Prisma" },
+      { key: "engine",      label: "Database Engine",  type: "select", options: ["PostgreSQL", "MySQL", "MariaDB", "SQL Server", "Oracle"], default: "PostgreSQL" },
+      { key: "orm",         label: "ORM / Access",     type: "select", options: ["Spring Data JPA", "jOOQ", "Spring Data JDBC", "Raw SQL"], default: "Spring Data JPA" },
       { key: "pool_max",    label: "Max Pool Size",    type: "number", default: 10, placeholder: "10" },
-      { key: "migrations",  label: "Migrations",       type: "toggle", default: true },
+      { key: "migrations",  label: "Flyway Migrations",type: "toggle", default: true },
     ],
   },
 
   sql_database: {
     fields: [
-      { key: "engine",    label: "Engine",      type: "select", options: ["PostgreSQL", "MySQL", "MariaDB", "SQLite", "SQL Server", "Oracle"], default: "PostgreSQL" },
-      { key: "orm",       label: "ORM",         type: "select", options: ["Prisma", "TypeORM", "Drizzle", "Sequelize", "SQLAlchemy", "Hibernate"], default: "Prisma" },
+      { key: "engine",    label: "Engine",      type: "select", options: ["PostgreSQL", "MySQL", "MariaDB", "SQL Server", "Oracle"], default: "PostgreSQL" },
+      { key: "orm",       label: "ORM",         type: "select", options: ["Spring Data JPA", "jOOQ", "Spring Data JDBC", "Hibernate (native)"], default: "Spring Data JPA" },
       { key: "pool_max",  label: "Max Pool",    type: "number", default: 10 },
       { key: "ssl",       label: "SSL/TLS",     type: "toggle", default: true },
     ],
@@ -110,8 +110,8 @@ const configs: Record<string, ComponentConfigSchema> = {
 
   nosql_database: {
     fields: [
-      { key: "engine",   label: "Engine",        type: "select", options: ["MongoDB", "DynamoDB", "Firestore", "CouchDB", "Cassandra", "ScyllaDB"], default: "MongoDB" },
-      { key: "odm",      label: "ODM / SDK",     type: "select", options: ["Mongoose", "AWS SDK", "Firebase Admin", "Native Driver"], default: "Mongoose" },
+      { key: "engine",   label: "Engine",        type: "select", options: ["MongoDB", "DynamoDB", "Cassandra", "Couchbase", "Redis"], default: "MongoDB" },
+      { key: "driver",   label: "Driver / SDK",  type: "select", options: ["Spring Data MongoDB", "Spring Data DynamoDB", "Spring Data Cassandra", "Spring Data Redis", "Native Driver"], default: "Spring Data MongoDB" },
       { key: "indexes",  label: "Auto Indexes",  type: "toggle", default: true },
     ],
   },
@@ -276,82 +276,6 @@ const configs: Record<string, ComponentConfigSchema> = {
     ],
   },
 
-  // ── FRONTEND ─────────────────────────────────────────────────────────────
-
-  state_store: {
-    fields: [
-      { key: "library",    label: "State Library",   type: "select", options: ["Zustand", "Redux Toolkit", "Jotai", "MobX", "Valtio", "Context API"], default: "Zustand" },
-      { key: "devtools",   label: "DevTools",         type: "toggle", default: true },
-      { key: "persist",    label: "Persist State",    type: "toggle", default: false, hint: "Sync state to localStorage" },
-    ],
-  },
-
-  router: {
-    fields: [
-      { key: "library",    label: "Router Library",  type: "select", options: ["React Router v6", "TanStack Router", "Next.js App Router", "Wouter", "Vue Router", "Angular Router"], default: "React Router v6" },
-      { key: "lazy",       label: "Lazy Loading",    type: "toggle", default: true,  hint: "Code-split routes for faster initial load" },
-      { key: "auth_guard", label: "Auth Guards",     type: "toggle", default: true },
-    ],
-  },
-
-  client_api: {
-    fields: [
-      { key: "transport",  label: "HTTP Layer",      type: "select", options: ["fetch (native)", "axios", "ky", "got"], default: "fetch (native)" },
-      { key: "cache",      label: "Data Cache",      type: "select", options: ["None", "React Query", "SWR", "RTK Query"], default: "React Query" },
-      { key: "auth",       label: "Bearer Token",    type: "toggle", default: true,  hint: "Attach Authorization header from token storage" },
-      { key: "retry",      label: "Auto Retry",      type: "toggle", default: false },
-    ],
-  },
-
-  auth_ui: {
-    fields: [
-      { key: "flows",       label: "Auth Flows",        type: "multiselect", options: ["Login", "Signup", "Forgot Password", "MFA", "Email Verify"], default: ["Login", "Signup"] } as any,
-      { key: "providers",   label: "Social Providers",  type: "multiselect", options: ["Google", "GitHub", "Facebook", "Apple", "Twitter/X"],        default: [] } as any,
-      { key: "remember_me", label: "Remember Me",       type: "toggle",      default: true },
-    ],
-  },
-
-  frontend_app: {
-    fields: [
-      { key: "framework",  label: "UI Framework",    type: "select", options: ["React", "Vue", "Angular", "Svelte", "Solid"], default: "React" },
-      { key: "css",        label: "Styling",         type: "select", options: ["Tailwind CSS", "CSS Modules", "Styled Components", "Sass/SCSS", "Plain CSS"], default: "Tailwind CSS" },
-      { key: "i18n",       label: "Internationalisation", type: "toggle", default: false },
-      { key: "pwa",        label: "PWA",             type: "toggle", default: false },
-    ],
-  },
-
-  dashboard_page: {
-    fields: [
-      { key: "charts",    label: "Chart Library",   type: "select", options: ["Recharts", "Chart.js", "Victory", "Nivo", "D3", "ApexCharts"], default: "Recharts" },
-      { key: "realtime",  label: "Real-time Data",  type: "toggle", default: false, hint: "Refresh data via polling or WebSocket" },
-      { key: "export",    label: "Export (CSV/PDF)",type: "toggle", default: false },
-    ],
-  },
-
-  data_table: {
-    fields: [
-      { key: "library",     label: "Table Library",    type: "select", options: ["TanStack Table", "AG Grid", "React Table", "MUI DataGrid", "Custom"], default: "TanStack Table" },
-      { key: "pagination",  label: "Pagination",       type: "select", options: ["Client-side", "Server-side", "Infinite scroll"], default: "Server-side" },
-      { key: "selection",   label: "Row Selection",    type: "toggle", default: true },
-      { key: "export",      label: "CSV Export",       type: "toggle", default: false },
-    ],
-  },
-
-  form_module: {
-    fields: [
-      { key: "library",     label: "Form Library",     type: "select", options: ["React Hook Form", "Formik", "Final Form", "Custom"], default: "React Hook Form" },
-      { key: "validation",  label: "Validation Schema",type: "select", options: ["Zod", "Yup", "Joi", "None"], default: "Zod" },
-      { key: "file_upload", label: "File Upload",      type: "toggle", default: false },
-    ],
-  },
-
-  modal_system: {
-    fields: [
-      { key: "types",    label: "Overlay Types",   type: "multiselect", options: ["Modal", "Drawer", "Sheet", "Popover", "Toast"], default: ["Modal"] } as any,
-      { key: "library",  label: "Library",         type: "select",      options: ["Custom (portal)", "Radix UI", "Headless UI", "shadcn/ui"], default: "Custom (portal)" },
-      { key: "a11y",     label: "Accessibility",   type: "toggle",      default: true, hint: "Focus trap, aria roles, ESC key close" },
-    ],
-  },
 };
 
 export function getComponentConfig(type: string): ComponentConfigSchema | null {
