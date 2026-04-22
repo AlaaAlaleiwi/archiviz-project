@@ -2,6 +2,52 @@ import { useState, useEffect } from "react";
 import type { AIProvider, AISettings } from "../services/AIService";
 
 export type { AIProvider, AISettings };
+export type AppTheme = "black" | "red" | "purple" | "green" | "blue";
+export type EditorSettings = {
+  fontFamily: string;
+  fontSize: number;
+  lineHeight: number;
+  tabSize: number;
+  wordWrap: "on" | "off";
+  minimap: boolean;
+  lineNumbers: "on" | "off" | "relative";
+  renderWhitespace: "none" | "selection" | "all";
+  formatOnPaste: boolean;
+  formatOnType: boolean;
+  smoothScrolling: boolean;
+  cursorStyle: "line" | "block" | "underline";
+};
+export type DockerSettings = {
+  enabled: boolean;
+  composeEnabled: boolean;
+  includePostgres: boolean;
+  includeRedis: boolean;
+  imageName: string;
+  imageTag: string;
+  appPort: number;
+  containerPort: number;
+  postgresPort: number;
+  redisPort: number;
+  maxRamPercentage: number;
+  healthcheckEnabled: boolean;
+};
+export type GitHubUser = {
+  login: string;
+  avatar_url?: string;
+  html_url?: string;
+};
+export type GitSettings = {
+  githubToken: string;
+  githubUser: GitHubUser | null;
+};
+export type TerminalSettings = {
+  shell: string;
+  fontSize: number;
+  fontFamily: string;
+  cursorStyle: "bar" | "block" | "underline";
+  cursorBlink: boolean;
+};
+type SettingsSection = "appearance" | "editor" | "terminal" | "docker" | "git" | "ai";
 
 const OPENAI_MODELS = [
   { id: "gpt-4o",          hint: "Best quality" },
@@ -27,8 +73,67 @@ const PROVIDERS: { id: AIProvider; label: string; icon: string }[] = [
   { id: "openai",       label: "OpenAI",      icon: "🤖" },
   { id: "anthropic",    label: "Claude",      icon: "🧠" },
   { id: "local",        label: "Local",       icon: "🖥️" },
-  { id: "spring-boot",  label: "Spring Boot", icon: "🌿" },
 ];
+
+const THEME_OPTIONS: { id: AppTheme; label: string; swatch: string; hint: string }[] = [
+  { id: "black", label: "Black", swatch: "#2dd4bf", hint: "Neutral dark" },
+  { id: "red", label: "Red", swatch: "#fb7185", hint: "High contrast" },
+  { id: "purple", label: "Purple", swatch: "#a78bfa", hint: "Creative" },
+  { id: "green", label: "Green", swatch: "#34d399", hint: "Spring" },
+  { id: "blue", label: "Blue", swatch: "#38bdf8", hint: "Classic" },
+];
+
+const SETTINGS_NAV: { id: SettingsSection; label: string; hint: string }[] = [
+  { id: "appearance", label: "Appearance", hint: "Theme and color" },
+  { id: "editor", label: "Editor", hint: "Font and behavior" },
+  { id: "terminal", label: "Terminal", hint: "Shell and appearance" },
+  { id: "docker", label: "Docker", hint: "Image and compose" },
+  { id: "git", label: "Git", hint: "GitHub account" },
+  { id: "ai", label: "AI", hint: "Provider and model" },
+];
+
+export const DEFAULT_EDITOR_SETTINGS: EditorSettings = {
+  fontFamily: "JetBrains Mono, SF Mono, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+  fontSize: 13,
+  lineHeight: 21,
+  tabSize: 2,
+  wordWrap: "off",
+  minimap: false,
+  lineNumbers: "on",
+  renderWhitespace: "selection",
+  formatOnPaste: true,
+  formatOnType: true,
+  smoothScrolling: true,
+  cursorStyle: "line",
+};
+
+export const DEFAULT_DOCKER_SETTINGS: DockerSettings = {
+  enabled: true,
+  composeEnabled: true,
+  includePostgres: true,
+  includeRedis: true,
+  imageName: "",
+  imageTag: "latest",
+  appPort: 8080,
+  containerPort: 8080,
+  postgresPort: 5432,
+  redisPort: 6379,
+  maxRamPercentage: 75,
+  healthcheckEnabled: true,
+};
+
+export const DEFAULT_GIT_SETTINGS: GitSettings = {
+  githubToken: "",
+  githubUser: null,
+};
+
+export const DEFAULT_TERMINAL_SETTINGS: TerminalSettings = {
+  shell: "",
+  fontSize: 13,
+  fontFamily: '"JetBrains Mono", "SF Mono", SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace',
+  cursorStyle: "bar",
+  cursorBlink: true,
+};
 
 const defaultSettings: AISettings = {
   provider: "openai",
@@ -74,13 +179,61 @@ function ModelChips({
   );
 }
 
-export default function Settings({ onSave }: { onSave: (s: AISettings) => void }) {
+const isWindows = () => navigator.platform.startsWith("Win");
+
+const SHELL_PRESETS = () => isWindows()
+  ? [
+      { label: "Auto-detect",   value: "" },
+      { label: "PowerShell",    value: "powershell.exe" },
+      { label: "CMD",           value: "cmd.exe" },
+      { label: "Git Bash",      value: "C:\\Program Files\\Git\\bin\\bash.exe" },
+      { label: "WSL",           value: "wsl.exe" },
+    ]
+  : [
+      { label: "Auto-detect",   value: "" },
+      { label: "zsh",           value: "/bin/zsh" },
+      { label: "bash",          value: "/bin/bash" },
+      { label: "fish",          value: "/usr/local/bin/fish" },
+      { label: "sh",            value: "/bin/sh" },
+    ];
+
+export default function Settings({
+  onSave,
+  theme,
+  setTheme,
+  editorSettings,
+  setEditorSettings,
+  terminalSettings,
+  setTerminalSettings,
+  dockerSettings,
+  setDockerSettings,
+  gitSettings,
+  setGitSettings,
+  onClose,
+}: {
+  onSave: (s: AISettings) => void;
+  theme: AppTheme;
+  setTheme: (theme: AppTheme) => void;
+  editorSettings: EditorSettings;
+  setEditorSettings: (settings: EditorSettings) => void;
+  terminalSettings: TerminalSettings;
+  setTerminalSettings: (settings: TerminalSettings) => void;
+  dockerSettings: DockerSettings;
+  setDockerSettings: (settings: DockerSettings) => void;
+  gitSettings: GitSettings;
+  setGitSettings: (settings: GitSettings) => void;
+  onClose: () => void;
+}) {
   const [cfg, setCfg] = useState<AISettings>(defaultSettings);
   const [error, setError] = useState<string | null>(null);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<"ok" | "fail" | null>(null);
   const [fetchingModels, setFetchingModels] = useState(false);
   const [fetchedModels, setFetchedModels] = useState<{ id: string }[]>([]);
+  const [activeSection, setActiveSection] = useState<SettingsSection>("appearance");
+  const [gitToken, setGitToken] = useState(gitSettings.githubToken);
+  const [gitTesting, setGitTesting] = useState(false);
+  const [gitStatus, setGitStatus] = useState<{ kind: "idle" | "success" | "error"; message: string }>({ kind: "idle", message: "" });
 
   useEffect(() => {
     const saved = localStorage.getItem("ai_settings");
@@ -88,7 +241,13 @@ export default function Settings({ onSave }: { onSave: (s: AISettings) => void }
       try {
         const parsed = JSON.parse(saved);
         if (parsed && typeof parsed === "object") {
-          setCfg({ ...defaultSettings, ...parsed });
+          setCfg({
+            ...defaultSettings,
+            ...parsed,
+            provider: parsed.provider === "spring-boot" ? "openai" : parsed.provider,
+            baseUrl: parsed.provider === "spring-boot" ? defaultSettings.baseUrl : (parsed.baseUrl ?? defaultSettings.baseUrl),
+            model: parsed.provider === "spring-boot" ? "" : (parsed.model ?? defaultSettings.model),
+          });
         }
       } catch {
         console.warn("Invalid ai_settings in localStorage");
@@ -103,8 +262,7 @@ export default function Settings({ onSave }: { onSave: (s: AISettings) => void }
   };
 
   const handleProviderChange = (p: AIProvider) => {
-    const baseUrl = p === "spring-boot" ? "http://localhost:8080"
-      : p === "local" ? "http://localhost:1234"
+    const baseUrl = p === "local" ? "http://localhost:1234"
       : "";
     setCfg(s => ({ ...s, provider: p, model: "", baseUrl: baseUrl || s.baseUrl }));
     setFetchedModels([]);
@@ -114,7 +272,7 @@ export default function Settings({ onSave }: { onSave: (s: AISettings) => void }
 
   /* ── Test connection ── */
   const testConnection = async () => {
-    if (cfg.provider !== "spring-boot" && !cfg.model.trim()) { setError("Select or enter a model first."); return; }
+    if (!cfg.model.trim()) { setError("Select or enter a model first."); return; }
     if ((cfg.provider === "openai" || cfg.provider === "anthropic") && !cfg.apiKey.trim()) {
       setError("Enter your API key first."); return;
     }
@@ -162,7 +320,7 @@ export default function Settings({ onSave }: { onSave: (s: AISettings) => void }
   };
 
   const save = () => {
-    if (cfg.provider !== "spring-boot" && !cfg.model.trim()) { setError("Please select or enter a model."); return; }
+    if (!cfg.model.trim()) { setError("Please select or enter a model."); return; }
     if ((cfg.provider === "openai" || cfg.provider === "anthropic") && !cfg.apiKey.trim()) {
       setError("Please enter your API key."); return;
     }
@@ -170,15 +328,605 @@ export default function Settings({ onSave }: { onSave: (s: AISettings) => void }
     onSave(cfg);
   };
 
+  const updateEditorSettings = (patch: Partial<EditorSettings>) => {
+    setEditorSettings({ ...editorSettings, ...patch });
+  };
+
+  const updateDockerSettings = (patch: Partial<DockerSettings>) => {
+    setDockerSettings({ ...dockerSettings, ...patch });
+  };
+
+  const updateTerminalSettings = (patch: Partial<TerminalSettings>) => {
+    setTerminalSettings({ ...terminalSettings, ...patch });
+  };
+
+  const loginToGitHub = async () => {
+    const token = gitToken.trim();
+    if (!token) {
+      setGitStatus({ kind: "error", message: "Enter a GitHub token first." });
+      return;
+    }
+
+    setGitTesting(true);
+    setGitStatus({ kind: "idle", message: "" });
+    try {
+      const res = await fetch("https://api.github.com/user", {
+        headers: {
+          Accept: "application/vnd.github+json",
+          Authorization: `Bearer ${token}`,
+          "X-GitHub-Api-Version": "2022-11-28",
+        },
+      });
+      if (!res.ok) {
+        throw new Error(res.status === 401 ? "GitHub rejected this token." : `GitHub login failed (${res.status}).`);
+      }
+      const user = await res.json() as GitHubUser;
+      setGitSettings({ githubToken: token, githubUser: user });
+      setGitStatus({ kind: "success", message: `Logged in as ${user.login}.` });
+    } catch (err: any) {
+      setGitSettings(DEFAULT_GIT_SETTINGS);
+      setGitStatus({ kind: "error", message: err?.message ?? "Could not log in to GitHub." });
+    } finally {
+      setGitTesting(false);
+    }
+  };
+
+  const logoutFromGitHub = () => {
+    setGitToken("");
+    setGitSettings(DEFAULT_GIT_SETTINGS);
+    setGitStatus({ kind: "idle", message: "" });
+  };
+
   const openAIModels = fetchedModels.length > 0 ? fetchedModels : OPENAI_MODELS;
+  const activeNav = SETTINGS_NAV.find(item => item.id === activeSection) ?? SETTINGS_NAV[0];
 
   return (
-    <div className="settings-page" style={{ width: 460, maxHeight: "85vh", overflowY: "auto" }}>
-      <h2 style={{ fontSize: 15, fontWeight: 700, color: "var(--text)", marginBottom: 2 }}>AI Settings</h2>
+    <div className="settings-page settings-page--wide settings-page--split">
+      <aside className="settings-sidebar" aria-label="Settings sections">
+        <div className="settings-sidebar-title">
+          <h2>Settings</h2>
+          <p>Workspace configuration</p>
+        </div>
+        <div className="settings-sidebar-nav">
+          {SETTINGS_NAV.map(item => (
+            <button
+              key={item.id}
+              className={`settings-sidebar-item ${activeSection === item.id ? "active" : ""}`}
+              onClick={() => setActiveSection(item.id)}
+            >
+              <span>{item.label}</span>
+              <small>{item.hint}</small>
+            </button>
+          ))}
+        </div>
+      </aside>
+
+      <main className="settings-config">
+        <div className="settings-config-header">
+          <div>
+            <h3>{activeNav.label}</h3>
+            <p>{activeNav.hint}</p>
+          </div>
+          <button className="settings-close" onClick={onClose} aria-label="Close settings">x</button>
+        </div>
+
+        {activeSection === "appearance" && (
+          <section className="settings-section">
+            <div className="settings-section-heading">
+              <span>Theme</span>
+              <small>Choose a workspace color</small>
+            </div>
+            <div className="settings-theme-grid">
+              {THEME_OPTIONS.map(option => (
+                <button
+                  key={option.id}
+                  className={`settings-theme-card ${theme === option.id ? "active" : ""}`}
+                  onClick={() => setTheme(option.id)}
+                >
+                  <span className="settings-theme-swatch" style={{ background: option.swatch }} />
+                  <span className="settings-theme-copy">
+                    <span>{option.label}</span>
+                    <small>{option.hint}</small>
+                  </span>
+                </button>
+              ))}
+            </div>
+          </section>
+        )}
+
+        {activeSection === "editor" && (
+          <section className="settings-section">
+            <div className="settings-section-heading">
+              <span>Editor Configuration</span>
+              <small>Font, layout, and typing behavior</small>
+            </div>
+
+            <div className="settings-form-grid">
+              <label className="settings-field settings-field--wide">
+                <span>Font Family</span>
+                <input
+                  className="input"
+                  value={editorSettings.fontFamily}
+                  onChange={e => updateEditorSettings({ fontFamily: e.target.value })}
+                  placeholder="JetBrains Mono, Menlo, Monaco, Consolas, monospace"
+                />
+              </label>
+
+              <label className="settings-field">
+                <span>Font Size</span>
+                <input
+                  className="input"
+                  type="number"
+                  min={10}
+                  max={28}
+                  value={editorSettings.fontSize}
+                  onChange={e => updateEditorSettings({ fontSize: Number(e.target.value) || DEFAULT_EDITOR_SETTINGS.fontSize })}
+                />
+              </label>
+
+              <label className="settings-field">
+                <span>Line Height</span>
+                <input
+                  className="input"
+                  type="number"
+                  min={14}
+                  max={44}
+                  value={editorSettings.lineHeight}
+                  onChange={e => updateEditorSettings({ lineHeight: Number(e.target.value) || DEFAULT_EDITOR_SETTINGS.lineHeight })}
+                />
+              </label>
+
+              <label className="settings-field">
+                <span>Tab Size</span>
+                <input
+                  className="input"
+                  type="number"
+                  min={2}
+                  max={8}
+                  value={editorSettings.tabSize}
+                  onChange={e => updateEditorSettings({ tabSize: Number(e.target.value) || DEFAULT_EDITOR_SETTINGS.tabSize })}
+                />
+              </label>
+
+              <label className="settings-field">
+                <span>Word Wrap</span>
+                <select
+                  className="input"
+                  value={editorSettings.wordWrap}
+                  onChange={e => updateEditorSettings({ wordWrap: e.target.value as EditorSettings["wordWrap"] })}
+                >
+                  <option value="off">Off</option>
+                  <option value="on">On</option>
+                </select>
+              </label>
+
+              <label className="settings-field">
+                <span>Line Numbers</span>
+                <select
+                  className="input"
+                  value={editorSettings.lineNumbers}
+                  onChange={e => updateEditorSettings({ lineNumbers: e.target.value as EditorSettings["lineNumbers"] })}
+                >
+                  <option value="on">On</option>
+                  <option value="relative">Relative</option>
+                  <option value="off">Off</option>
+                </select>
+              </label>
+
+              <label className="settings-field">
+                <span>Whitespace</span>
+                <select
+                  className="input"
+                  value={editorSettings.renderWhitespace}
+                  onChange={e => updateEditorSettings({ renderWhitespace: e.target.value as EditorSettings["renderWhitespace"] })}
+                >
+                  <option value="selection">Selection</option>
+                  <option value="all">All</option>
+                  <option value="none">None</option>
+                </select>
+              </label>
+
+              <label className="settings-field">
+                <span>Cursor</span>
+                <select
+                  className="input"
+                  value={editorSettings.cursorStyle}
+                  onChange={e => updateEditorSettings({ cursorStyle: e.target.value as EditorSettings["cursorStyle"] })}
+                >
+                  <option value="line">Line</option>
+                  <option value="block">Block</option>
+                  <option value="underline">Underline</option>
+                </select>
+              </label>
+            </div>
+
+            <div className="settings-toggle-list">
+              <label className="settings-toggle-row">
+                <span>
+                  <strong>Minimap</strong>
+                  <small>Show code overview on the right side.</small>
+                </span>
+                <input
+                  type="checkbox"
+                  checked={editorSettings.minimap}
+                  onChange={e => updateEditorSettings({ minimap: e.target.checked })}
+                />
+              </label>
+
+              <label className="settings-toggle-row">
+                <span>
+                  <strong>Format on Paste</strong>
+                  <small>Clean up pasted snippets when Monaco can format them.</small>
+                </span>
+                <input
+                  type="checkbox"
+                  checked={editorSettings.formatOnPaste}
+                  onChange={e => updateEditorSettings({ formatOnPaste: e.target.checked })}
+                />
+              </label>
+
+              <label className="settings-toggle-row">
+                <span>
+                  <strong>Format on Type</strong>
+                  <small>Apply language formatting while typing.</small>
+                </span>
+                <input
+                  type="checkbox"
+                  checked={editorSettings.formatOnType}
+                  onChange={e => updateEditorSettings({ formatOnType: e.target.checked })}
+                />
+              </label>
+
+              <label className="settings-toggle-row">
+                <span>
+                  <strong>Smooth Scrolling</strong>
+                  <small>Use animated scrolling inside the editor.</small>
+                </span>
+                <input
+                  type="checkbox"
+                  checked={editorSettings.smoothScrolling}
+                  onChange={e => updateEditorSettings({ smoothScrolling: e.target.checked })}
+                />
+              </label>
+            </div>
+
+            <button className="btn" onClick={() => setEditorSettings(DEFAULT_EDITOR_SETTINGS)}>
+              Reset Editor Defaults
+            </button>
+          </section>
+        )}
+
+        {activeSection === "terminal" && (
+          <section className="settings-section">
+            <div className="settings-section-heading">
+              <span>Terminal Configuration</span>
+              <small>Shell, font, and cursor behavior</small>
+            </div>
+
+            <div className="settings-section-heading" style={{ marginTop: 8 }}>
+              <span>Shell</span>
+              <small>Which shell to launch in new terminal tabs</small>
+            </div>
+
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
+              {SHELL_PRESETS().map(({ label: lbl, value }) => {
+                const isActive = terminalSettings.shell === value;
+                return (
+                  <button
+                    key={value || "__auto__"}
+                    onClick={() => updateTerminalSettings({ shell: value })}
+                    style={{
+                      padding: "5px 12px", borderRadius: 20, fontSize: 11, fontWeight: 600,
+                      border: `1px solid ${isActive ? "var(--accent)" : "var(--border)"}`,
+                      background: isActive ? "color-mix(in srgb, var(--accent) 10%, transparent)" : "var(--panel2)",
+                      color: isActive ? "var(--accent)" : "var(--muted)",
+                      cursor: "pointer", transition: "all 0.12s",
+                    }}
+                  >
+                    {lbl}
+                  </button>
+                );
+              })}
+            </div>
+
+            <label className="settings-field settings-field--wide" style={{ marginBottom: 18 }}>
+              <span>Custom shell path</span>
+              <input
+                className="input"
+                value={terminalSettings.shell}
+                onChange={e => updateTerminalSettings({ shell: e.target.value })}
+                placeholder="Leave empty for auto-detect, or enter a full path"
+              />
+            </label>
+
+            <div className="settings-form-grid">
+              <label className="settings-field">
+                <span>Font Size</span>
+                <input
+                  className="input"
+                  type="number"
+                  min={8}
+                  max={28}
+                  value={terminalSettings.fontSize}
+                  onChange={e => updateTerminalSettings({ fontSize: Number(e.target.value) || DEFAULT_TERMINAL_SETTINGS.fontSize })}
+                />
+              </label>
+
+              <label className="settings-field">
+                <span>Cursor Style</span>
+                <select
+                  className="input"
+                  value={terminalSettings.cursorStyle}
+                  onChange={e => updateTerminalSettings({ cursorStyle: e.target.value as TerminalSettings["cursorStyle"] })}
+                >
+                  <option value="bar">Bar</option>
+                  <option value="block">Block</option>
+                  <option value="underline">Underline</option>
+                </select>
+              </label>
+            </div>
+
+            <label className="settings-field settings-field--wide">
+              <span>Font Family</span>
+              <input
+                className="input"
+                value={terminalSettings.fontFamily}
+                onChange={e => updateTerminalSettings({ fontFamily: e.target.value })}
+                placeholder={DEFAULT_TERMINAL_SETTINGS.fontFamily}
+              />
+            </label>
+
+            <div className="settings-toggle-list" style={{ marginTop: 12 }}>
+              <label className="settings-toggle-row">
+                <span>
+                  <strong>Cursor Blink</strong>
+                  <small>Animate the terminal cursor.</small>
+                </span>
+                <input
+                  type="checkbox"
+                  checked={terminalSettings.cursorBlink}
+                  onChange={e => updateTerminalSettings({ cursorBlink: e.target.checked })}
+                />
+              </label>
+            </div>
+
+            <button className="btn" style={{ marginTop: 16 }} onClick={() => setTerminalSettings(DEFAULT_TERMINAL_SETTINGS)}>
+              Reset Terminal Defaults
+            </button>
+          </section>
+        )}
+
+        {activeSection === "docker" && (
+          <section className="settings-section">
+            <div className="settings-section-heading">
+              <span>Docker Configuration</span>
+              <small>Generated Dockerfile and Compose settings</small>
+            </div>
+
+            <div className="settings-toggle-list">
+              <label className="settings-toggle-row">
+                <span>
+                  <strong>Generate Docker Files</strong>
+                  <small>Add Dockerfile and container runtime configuration to exported projects.</small>
+                </span>
+                <input
+                  type="checkbox"
+                  checked={dockerSettings.enabled}
+                  onChange={e => updateDockerSettings({ enabled: e.target.checked })}
+                />
+              </label>
+
+              <label className="settings-toggle-row">
+                <span>
+                  <strong>Generate Docker Compose</strong>
+                  <small>Create docker-compose.yml for local app, database, and cache services.</small>
+                </span>
+                <input
+                  type="checkbox"
+                  checked={dockerSettings.composeEnabled}
+                  disabled={!dockerSettings.enabled}
+                  onChange={e => updateDockerSettings({ composeEnabled: e.target.checked })}
+                />
+              </label>
+
+              <label className="settings-toggle-row">
+                <span>
+                  <strong>PostgreSQL Service</strong>
+                  <small>Include a postgres container in Docker Compose.</small>
+                </span>
+                <input
+                  type="checkbox"
+                  checked={dockerSettings.includePostgres}
+                  disabled={!dockerSettings.enabled || !dockerSettings.composeEnabled}
+                  onChange={e => updateDockerSettings({ includePostgres: e.target.checked })}
+                />
+              </label>
+
+              <label className="settings-toggle-row">
+                <span>
+                  <strong>Redis Service</strong>
+                  <small>Include a redis container in Docker Compose.</small>
+                </span>
+                <input
+                  type="checkbox"
+                  checked={dockerSettings.includeRedis}
+                  disabled={!dockerSettings.enabled || !dockerSettings.composeEnabled}
+                  onChange={e => updateDockerSettings({ includeRedis: e.target.checked })}
+                />
+              </label>
+
+              <label className="settings-toggle-row">
+                <span>
+                  <strong>Healthcheck</strong>
+                  <small>Add a container healthcheck against the Spring actuator endpoint.</small>
+                </span>
+                <input
+                  type="checkbox"
+                  checked={dockerSettings.healthcheckEnabled}
+                  disabled={!dockerSettings.enabled}
+                  onChange={e => updateDockerSettings({ healthcheckEnabled: e.target.checked })}
+                />
+              </label>
+            </div>
+
+            <div className="settings-form-grid">
+              <label className="settings-field">
+                <span>Image Name</span>
+                <input
+                  className="input"
+                  value={dockerSettings.imageName}
+                  onChange={e => updateDockerSettings({ imageName: e.target.value })}
+                  placeholder="Use project name"
+                  disabled={!dockerSettings.enabled}
+                />
+              </label>
+
+              <label className="settings-field">
+                <span>Image Tag</span>
+                <input
+                  className="input"
+                  value={dockerSettings.imageTag}
+                  onChange={e => updateDockerSettings({ imageTag: e.target.value })}
+                  placeholder="latest"
+                  disabled={!dockerSettings.enabled}
+                />
+              </label>
+
+              <label className="settings-field">
+                <span>Host Port</span>
+                <input
+                  className="input"
+                  type="number"
+                  min={1}
+                  max={65535}
+                  value={dockerSettings.appPort}
+                  onChange={e => updateDockerSettings({ appPort: Number(e.target.value) || DEFAULT_DOCKER_SETTINGS.appPort })}
+                  disabled={!dockerSettings.enabled}
+                />
+              </label>
+
+              <label className="settings-field">
+                <span>Container Port</span>
+                <input
+                  className="input"
+                  type="number"
+                  min={1}
+                  max={65535}
+                  value={dockerSettings.containerPort}
+                  onChange={e => updateDockerSettings({ containerPort: Number(e.target.value) || DEFAULT_DOCKER_SETTINGS.containerPort })}
+                  disabled={!dockerSettings.enabled}
+                />
+              </label>
+
+              <label className="settings-field">
+                <span>Postgres Port</span>
+                <input
+                  className="input"
+                  type="number"
+                  min={1}
+                  max={65535}
+                  value={dockerSettings.postgresPort}
+                  onChange={e => updateDockerSettings({ postgresPort: Number(e.target.value) || DEFAULT_DOCKER_SETTINGS.postgresPort })}
+                  disabled={!dockerSettings.enabled || !dockerSettings.composeEnabled || !dockerSettings.includePostgres}
+                />
+              </label>
+
+              <label className="settings-field">
+                <span>Redis Port</span>
+                <input
+                  className="input"
+                  type="number"
+                  min={1}
+                  max={65535}
+                  value={dockerSettings.redisPort}
+                  onChange={e => updateDockerSettings({ redisPort: Number(e.target.value) || DEFAULT_DOCKER_SETTINGS.redisPort })}
+                  disabled={!dockerSettings.enabled || !dockerSettings.composeEnabled || !dockerSettings.includeRedis}
+                />
+              </label>
+
+              <label className="settings-field">
+                <span>JVM Max RAM %</span>
+                <input
+                  className="input"
+                  type="number"
+                  min={25}
+                  max={95}
+                  value={dockerSettings.maxRamPercentage}
+                  onChange={e => updateDockerSettings({ maxRamPercentage: Number(e.target.value) || DEFAULT_DOCKER_SETTINGS.maxRamPercentage })}
+                  disabled={!dockerSettings.enabled}
+                />
+              </label>
+            </div>
+
+            <button className="btn" onClick={() => setDockerSettings(DEFAULT_DOCKER_SETTINGS)}>
+              Reset Docker Defaults
+            </button>
+          </section>
+        )}
+
+        {activeSection === "git" && (
+          <section className="settings-section">
+            <div className="settings-section-heading">
+              <span>GitHub Login</span>
+              <small>Persisted for repo creation and Git operations</small>
+            </div>
+
+            {gitSettings.githubUser ? (
+              <div className="github-account">
+                {gitSettings.githubUser.avatar_url && <img className="github-avatar" src={gitSettings.githubUser.avatar_url} alt="" />}
+                <div className="github-account-main">
+                  <span className="github-account-name">{gitSettings.githubUser.login}</span>
+                  {gitSettings.githubUser.html_url && (
+                    <a className="github-link" href={gitSettings.githubUser.html_url} target="_blank" rel="noreferrer">
+                      View profile
+                    </a>
+                  )}
+                </div>
+                <button className="btn" onClick={logoutFromGitHub}>Logout</button>
+              </div>
+            ) : (
+              <div className="github-login-box">
+                <label className="settings-field">
+                  <span>GitHub Token</span>
+                  <input
+                    className="input"
+                    type="password"
+                    value={gitToken}
+                    onChange={e => {
+                      setGitToken(e.target.value);
+                      setGitStatus({ kind: "idle", message: "" });
+                    }}
+                    placeholder="Token with repo scope"
+                  />
+                </label>
+                <button className="btn btn-primary workspace-wide-btn" onClick={loginToGitHub} disabled={gitTesting}>
+                  {gitTesting ? "Checking..." : "Login to GitHub"}
+                </button>
+              </div>
+            )}
+
+            <div className="settings-note">
+              The token is saved locally on this machine so you do not need to log in every time you open a project.
+            </div>
+
+            {gitStatus.message && (
+              <div className={`github-status github-status--${gitStatus.kind}`}>
+                <span>{gitStatus.message}</span>
+              </div>
+            )}
+          </section>
+        )}
+
+        {activeSection === "ai" && (
+          <section className="settings-section">
+            <div className="settings-section-heading">
+              <span>AI Settings</span>
+              <small>Provider and model</small>
+            </div>
 
       {/* Provider */}
       <label style={label}>Provider</label>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 8 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 8 }}>
         {PROVIDERS.map(p => (
           <button key={p.id} onClick={() => handleProviderChange(p.id)} style={{
             padding: "10px 8px", borderRadius: 10, fontWeight: 700, fontSize: 12, cursor: "pointer",
@@ -256,27 +1004,6 @@ export default function Settings({ onSave }: { onSave: (s: AISettings) => void }
         </>
       )}
 
-      {/* Spring Boot */}
-      {cfg.provider === "spring-boot" && (
-        <>
-          <label style={label}>Spring Boot Base URL</label>
-          <input className="input" value={cfg.baseUrl}
-            onChange={e => update({ baseUrl: e.target.value.replace(/\/$/, "") })}
-            placeholder="http://localhost:8080" />
-          <small style={{ color: "var(--muted)", fontSize: 11, marginTop: 4, display: "block" }}>
-            Calls <code style={{ color: "var(--accent)" }}>POST /api/ai/chat</code> on your Spring Boot server.
-          </small>
-          <label style={{ ...label, marginTop: 12 }}>Model <span style={{ fontWeight: 400, textTransform: "none", fontSize: 10 }}>(optional — overrides server default)</span></label>
-          <input className="input" value={cfg.model} onChange={e => update({ model: e.target.value })}
-            placeholder="e.g. llama3 (leave blank to use server default)" />
-          <label style={{ ...label, marginTop: 12 }}>System Prompt <span style={{ fontWeight: 400, textTransform: "none", fontSize: 10 }}>(optional)</span></label>
-          <textarea className="input" value={cfg.systemPrompt ?? ""} rows={3}
-            onChange={e => update({ systemPrompt: e.target.value })}
-            placeholder="Leave blank to use the server default prompt"
-            style={{ resize: "vertical", fontFamily: "inherit", fontSize: 12 }} />
-        </>
-      )}
-
       {/* Test connection */}
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 16 }}>
         <button onClick={testConnection} disabled={testing} style={{
@@ -312,8 +1039,11 @@ export default function Settings({ onSave }: { onSave: (s: AISettings) => void }
 
       <button className="btn btn-primary" onClick={save}
         style={{ marginTop: 18, width: "100%", minHeight: 40 }}>
-        Save Settings
+        Save AI Settings
       </button>
+          </section>
+        )}
+      </main>
     </div>
   );
 }

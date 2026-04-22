@@ -6,8 +6,20 @@ import Palette from "./components/Palette";
 import Canvas from "./components/Canvas";
 import CodePanel from "./components/CodePanel";
 import FileWorkspace, { type WorkspaceFile } from "./components/FileWorkspace";
-import Topbar, { ProjectConfigModal, type JavaProjectConfig } from "./components/Topbar";
-import Settings, { type AISettings } from "./components/Settings";
+import ApiTester from "./components/ApiTester";
+import Topbar, { ProjectConfigModal, type JavaProjectConfig, type RepositoryGitOperation } from "./components/Topbar";
+import Settings, {
+  DEFAULT_DOCKER_SETTINGS,
+  DEFAULT_EDITOR_SETTINGS,
+  DEFAULT_GIT_SETTINGS,
+  DEFAULT_TERMINAL_SETTINGS,
+  type AISettings,
+  type AppTheme,
+  type DockerSettings,
+  type EditorSettings,
+  type GitSettings,
+  type TerminalSettings,
+} from "./components/Settings";
 import NodeConfigModal from "./components/NodeConfigModal";
 import NodeCodeModal from "./components/NodeCodeModal";
 import ChatPanel from "./components/ChatPanel";
@@ -51,6 +63,12 @@ type PanState = {
 const MIN_SCALE = 0.5;
 const MAX_SCALE = 2.4;
 const ZOOM_STEP = 1.14;
+const RECENT_PROJECTS_KEY = "archiviz_recent_projects";
+const MAX_RECENT_PROJECTS = 6;
+const EDITOR_SETTINGS_KEY    = "archiviz_editor_settings";
+const DOCKER_SETTINGS_KEY    = "archiviz_docker_settings";
+const GIT_SETTINGS_KEY       = "archiviz_git_settings";
+const TERMINAL_SETTINGS_KEY  = "archiviz_terminal_settings";
 
 const dedupeFiles = (files: WorkspaceFile[]) => {
   const fileMap = new Map<string, string>();
@@ -60,22 +78,17 @@ const dedupeFiles = (files: WorkspaceFile[]) => {
 
 const isHiddenWorkspacePlaceholder = (path: string) => path.split("/").pop() === ".gitkeep";
 
-const hasWorkspacePath = (files: WorkspaceFile[], path: string) => files.some(file => file.path === path);
 
-const getBuildCommand = (files: WorkspaceFile[], buildTool: BuildTool) => {
-  if (buildTool === "gradle" || hasWorkspacePath(files, "build.gradle") || hasWorkspacePath(files, "build.gradle.kts")) {
-    return hasWorkspacePath(files, "gradlew") ? "chmod +x ./gradlew && ./gradlew build" : "gradle build";
-  }
-
-  return hasWorkspacePath(files, "mvnw") ? "chmod +x ./mvnw && ./mvnw clean package" : "mvn clean package";
+const getBuildCommand = (_files: WorkspaceFile[], buildTool: BuildTool) => {
+  return buildTool === "gradle"
+    ? "gradle clean build -x test"
+    : "mvn clean package -DskipTests";
 };
 
-const getRunCommand = (files: WorkspaceFile[], buildTool: BuildTool) => {
-  if (buildTool === "gradle" || hasWorkspacePath(files, "build.gradle") || hasWorkspacePath(files, "build.gradle.kts")) {
-    return hasWorkspacePath(files, "gradlew") ? "chmod +x ./gradlew && ./gradlew bootRun" : "gradle bootRun";
-  }
-
-  return hasWorkspacePath(files, "mvnw") ? "chmod +x ./mvnw && ./mvnw spring-boot:run" : "mvn spring-boot:run";
+const getRunCommand = (_files: WorkspaceFile[], buildTool: BuildTool) => {
+  return buildTool === "gradle"
+    ? "gradle bootRun"
+    : "mvn spring-boot:run";
 };
 
 type SavedProjectFile = {
@@ -89,6 +102,125 @@ type SavedProjectFile = {
   graph: Graph;
   nodeCode?: Record<string, WorkspaceFile[]>;
   workspaceFiles?: WorkspaceFile[];
+  dockerSettings?: DockerSettings;
+};
+
+type RecentProject = {
+  id: string;
+  name: string;
+  openedAt: string;
+  path?: string;
+  fileName?: string;
+};
+
+const loadRecentProjects = (): RecentProject[] => {
+  try {
+    const saved = localStorage.getItem(RECENT_PROJECTS_KEY);
+    if (!saved) return [];
+    const parsed = JSON.parse(saved);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(item =>
+      item &&
+      typeof item.id === "string" &&
+      typeof item.name === "string" &&
+      typeof item.openedAt === "string"
+    ).slice(0, MAX_RECENT_PROJECTS);
+  } catch {
+    return [];
+  }
+};
+
+const loadEditorSettings = (): EditorSettings => {
+  try {
+    const saved = localStorage.getItem(EDITOR_SETTINGS_KEY);
+    if (!saved) return DEFAULT_EDITOR_SETTINGS;
+    const parsed = JSON.parse(saved);
+    if (!parsed || typeof parsed !== "object") return DEFAULT_EDITOR_SETTINGS;
+    return {
+      ...DEFAULT_EDITOR_SETTINGS,
+      ...parsed,
+      fontSize: Number(parsed.fontSize) || DEFAULT_EDITOR_SETTINGS.fontSize,
+      lineHeight: Number(parsed.lineHeight) || DEFAULT_EDITOR_SETTINGS.lineHeight,
+      tabSize: Number(parsed.tabSize) || DEFAULT_EDITOR_SETTINGS.tabSize,
+      wordWrap: parsed.wordWrap === "on" ? "on" : "off",
+      lineNumbers: parsed.lineNumbers === "off" || parsed.lineNumbers === "relative" ? parsed.lineNumbers : "on",
+      renderWhitespace: parsed.renderWhitespace === "none" || parsed.renderWhitespace === "all" ? parsed.renderWhitespace : "selection",
+      cursorStyle: parsed.cursorStyle === "block" || parsed.cursorStyle === "underline" ? parsed.cursorStyle : "line",
+      minimap: Boolean(parsed.minimap),
+      formatOnPaste: parsed.formatOnPaste !== false,
+      formatOnType: parsed.formatOnType !== false,
+      smoothScrolling: parsed.smoothScrolling !== false,
+    };
+  } catch {
+    return DEFAULT_EDITOR_SETTINGS;
+  }
+};
+
+const toSafePort = (value: unknown, fallback: number) => {
+  const port = Number(value);
+  return Number.isFinite(port) && port > 0 && port <= 65535 ? port : fallback;
+};
+
+const loadDockerSettings = (): DockerSettings => {
+  try {
+    const saved = localStorage.getItem(DOCKER_SETTINGS_KEY);
+    if (!saved) return DEFAULT_DOCKER_SETTINGS;
+    const parsed = JSON.parse(saved);
+    if (!parsed || typeof parsed !== "object") return DEFAULT_DOCKER_SETTINGS;
+    return {
+      ...DEFAULT_DOCKER_SETTINGS,
+      ...parsed,
+      enabled: parsed.enabled !== false,
+      composeEnabled: parsed.composeEnabled !== false,
+      includePostgres: parsed.includePostgres !== false,
+      includeRedis: parsed.includeRedis !== false,
+      imageName: typeof parsed.imageName === "string" ? parsed.imageName : DEFAULT_DOCKER_SETTINGS.imageName,
+      imageTag: typeof parsed.imageTag === "string" && parsed.imageTag.trim() ? parsed.imageTag : DEFAULT_DOCKER_SETTINGS.imageTag,
+      appPort: toSafePort(parsed.appPort, DEFAULT_DOCKER_SETTINGS.appPort),
+      containerPort: toSafePort(parsed.containerPort, DEFAULT_DOCKER_SETTINGS.containerPort),
+      postgresPort: toSafePort(parsed.postgresPort, DEFAULT_DOCKER_SETTINGS.postgresPort),
+      redisPort: toSafePort(parsed.redisPort, DEFAULT_DOCKER_SETTINGS.redisPort),
+      maxRamPercentage: Number(parsed.maxRamPercentage) || DEFAULT_DOCKER_SETTINGS.maxRamPercentage,
+      healthcheckEnabled: parsed.healthcheckEnabled !== false,
+    };
+  } catch {
+    return DEFAULT_DOCKER_SETTINGS;
+  }
+};
+
+const loadTerminalSettings = (): TerminalSettings => {
+  try {
+    const saved = localStorage.getItem(TERMINAL_SETTINGS_KEY);
+    if (!saved) return DEFAULT_TERMINAL_SETTINGS;
+    const parsed = JSON.parse(saved);
+    if (!parsed || typeof parsed !== "object") return DEFAULT_TERMINAL_SETTINGS;
+    return {
+      ...DEFAULT_TERMINAL_SETTINGS,
+      ...parsed,
+      shell: typeof parsed.shell === "string" ? parsed.shell : DEFAULT_TERMINAL_SETTINGS.shell,
+      fontSize: Number(parsed.fontSize) || DEFAULT_TERMINAL_SETTINGS.fontSize,
+      fontFamily: typeof parsed.fontFamily === "string" && parsed.fontFamily.trim() ? parsed.fontFamily : DEFAULT_TERMINAL_SETTINGS.fontFamily,
+      cursorStyle: ["bar", "block", "underline"].includes(parsed.cursorStyle) ? parsed.cursorStyle : DEFAULT_TERMINAL_SETTINGS.cursorStyle,
+      cursorBlink: parsed.cursorBlink !== false,
+    };
+  } catch {
+    return DEFAULT_TERMINAL_SETTINGS;
+  }
+};
+
+const loadGitSettings = (): GitSettings => {
+  try {
+    const saved = localStorage.getItem(GIT_SETTINGS_KEY);
+    if (!saved) return DEFAULT_GIT_SETTINGS;
+    const parsed = JSON.parse(saved);
+    if (!parsed || typeof parsed !== "object") return DEFAULT_GIT_SETTINGS;
+    return {
+      githubToken: typeof parsed.githubToken === "string" ? parsed.githubToken : "",
+      githubUser: parsed.githubUser && typeof parsed.githubUser.login === "string" ? parsed.githubUser : null,
+    };
+  } catch {
+    return DEFAULT_GIT_SETTINGS;
+  }
 };
 
 export default function App() {
@@ -96,7 +228,12 @@ export default function App() {
      STATE
   ======================= */
 
-  const [theme, setTheme] = useState<"dark" | "light">("dark");
+  const [theme, setTheme] = useState<AppTheme>(() => {
+    const saved = localStorage.getItem("archiviz_theme");
+    return saved === "black" || saved === "red" || saved === "purple" || saved === "green" || saved === "blue"
+      ? saved
+      : "black";
+  });
   const [settings, setSettings] = useState<AISettings | null>(() => {
     try {
       const saved = localStorage.getItem("ai_settings");
@@ -109,6 +246,10 @@ export default function App() {
     } catch { /* ignore */ }
     return null;
   });
+  const [editorSettings, setEditorSettings] = useState<EditorSettings>(loadEditorSettings);
+  const [terminalSettings, setTerminalSettings] = useState<TerminalSettings>(loadTerminalSettings);
+  const [dockerSettings, setDockerSettings] = useState<DockerSettings>(loadDockerSettings);
+  const [gitSettings, setGitSettings] = useState<GitSettings>(loadGitSettings);
 
   const language: Language = "java";
   const [javaVersion, setJavaVersion] = useState<JavaVersion>("21");
@@ -124,6 +265,7 @@ export default function App() {
   const [projectFileHandle, setProjectFileHandle] = useState<FileSystemFileHandle | null>(null);
   const [activeProjectStarted, setActiveProjectStarted] = useState(false);
   const [showStartupProjectConfig, setShowStartupProjectConfig] = useState(false);
+  const [recentProjects, setRecentProjects] = useState<RecentProject[]>(loadRecentProjects);
 
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
@@ -139,7 +281,14 @@ export default function App() {
   const [nodeCode, setNodeCode] = useState<Record<string, { path: string; content: string }[]>>({});
   const [workspaceFiles, setWorkspaceFiles] = useState<WorkspaceFile[]>([]);
   const [activeWorkspacePath, setActiveWorkspacePath] = useState<string | null>(null);
-  const [workspaceView, setWorkspaceView] = useState<"canvas" | "editor">("canvas");
+  const [workspaceView, setWorkspaceView] = useState<"canvas" | "editor" | "api" | null>("canvas");
+  const [gitRepositoryReady, setGitRepositoryReady] = useState(false);
+  const [topbarGitBusy, setTopbarGitBusy] = useState(false);
+  const [topbarGitOperation, setTopbarGitOperation] = useState<RepositoryGitOperation>("init");
+  const [topbarGitRemoteUrl, setTopbarGitRemoteUrl] = useState("");
+  const [topbarGitCurrentBranch, setTopbarGitCurrentBranch] = useState("main");
+  const [topbarGitTargetBranch, setTopbarGitTargetBranch] = useState("main");
+  const [topbarGitBranches, setTopbarGitBranches] = useState<string[]>([]);
   const [projectGenerating, setProjectGenerating] = useState(false);
   const [runnerBusy, setRunnerBusy] = useState(false);
   const [genError, setGenError] = useState<{ message: string; failedNodes?: string[] } | null>(null);
@@ -151,6 +300,30 @@ export default function App() {
   const projectGenerationInFlightRef = useRef(false);
   const folderInputRef = useRef<HTMLInputElement>(null);
   const projectFileInputRef = useRef<HTMLInputElement>(null);
+
+  const toggleWorkspaceView = useCallback((view: "canvas" | "editor" | "api") => {
+    setWorkspaceView(current => current === view ? null : view);
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem("archiviz_theme", theme);
+  }, [theme]);
+
+  useEffect(() => {
+    localStorage.setItem(EDITOR_SETTINGS_KEY, JSON.stringify(editorSettings));
+  }, [editorSettings]);
+
+  useEffect(() => {
+    localStorage.setItem(TERMINAL_SETTINGS_KEY, JSON.stringify(terminalSettings));
+  }, [terminalSettings]);
+
+  useEffect(() => {
+    localStorage.setItem(DOCKER_SETTINGS_KEY, JSON.stringify(dockerSettings));
+  }, [dockerSettings]);
+
+  useEffect(() => {
+    localStorage.setItem(GIT_SETTINGS_KEY, JSON.stringify(gitSettings));
+  }, [gitSettings]);
 
   /* =======================
      SERVICES (STABLE)
@@ -470,6 +643,10 @@ export default function App() {
     setWorkspaceFiles([]);
     setActiveWorkspacePath(null);
     setWorkspaceView("canvas");
+    setGitRepositoryReady(false);
+    setTopbarGitBranches([]);
+    setTopbarGitCurrentBranch("main");
+    setTopbarGitTargetBranch("main");
     setCamera({ x: 120, y: 72, scale: 1 });
   }, []);
 
@@ -491,6 +668,10 @@ export default function App() {
     setWorkspaceFiles([]);
     setActiveWorkspacePath(null);
     setWorkspaceView("canvas");
+    setGitRepositoryReady(false);
+    setTopbarGitBranches([]);
+    setTopbarGitCurrentBranch("main");
+    setTopbarGitTargetBranch("main");
   }, []);
 
   const createConfiguredProject = useCallback((cfg: JavaProjectConfig) => {
@@ -516,10 +697,15 @@ export default function App() {
     setPan(null);
     setCamera({ x: 120, y: 72, scale: 1 });
     setNodeCode(parsed.nodeCode ?? {});
+    setDockerSettings(parsed.dockerSettings ?? loadDockerSettings());
     const restoredFiles = parsed.workspaceFiles ?? Object.values(parsed.nodeCode ?? {}).flat();
     setWorkspaceFiles(restoredFiles);
     setActiveWorkspacePath(restoredFiles[0]?.path ?? null);
     setWorkspaceView(restoredFiles.length > 0 ? "editor" : "canvas");
+    setGitRepositoryReady(false);
+    setTopbarGitBranches([]);
+    setTopbarGitCurrentBranch("main");
+    setTopbarGitTargetBranch("main");
   }, []);
 
   const validateProjectData = (parsed: Partial<SavedProjectFile>): parsed is SavedProjectFile => (
@@ -534,11 +720,67 @@ export default function App() {
     typeof parsed.prompt === "string"
   );
 
+  const rememberRecentProject = useCallback((project: { name: string; path?: string; fileName?: string }) => {
+    setRecentProjects(prev => {
+      const id = project.path || project.fileName || project.name;
+      const nextProject: RecentProject = {
+        id,
+        name: project.name || project.fileName || "Untitled project",
+        fileName: project.fileName,
+        path: project.path,
+        openedAt: new Date().toISOString(),
+      };
+      const next = [
+        nextProject,
+        ...prev.filter(item => item.id !== id),
+      ].slice(0, MAX_RECENT_PROJECTS);
+
+      localStorage.setItem(RECENT_PROJECTS_KEY, JSON.stringify(next));
+      return next;
+    });
+  }, []);
+
+  const forgetRecentProject = useCallback((id: string) => {
+    setRecentProjects(prev => {
+      const next = prev.filter(item => item.id !== id);
+      localStorage.setItem(RECENT_PROJECTS_KEY, JSON.stringify(next));
+      return next;
+    });
+  }, []);
+
+  const openParsedProject = useCallback((
+    parsed: Partial<SavedProjectFile>,
+    options: { handle?: FileSystemFileHandle | null; path?: string; fileName?: string } = {}
+  ) => {
+    if (!validateProjectData(parsed)) throw new Error("Invalid project file");
+    applyProjectData(parsed);
+    setProjectFileHandle(options.handle ?? null);
+    setActiveProjectStarted(true);
+    rememberRecentProject({
+      name: parsed.projectName,
+      path: options.path,
+      fileName: options.fileName,
+    });
+  }, [applyProjectData, rememberRecentProject]);
+
   const onLoadProject = useCallback(() => {
     folderInputRef.current?.click();
   }, []);
 
   const onOpenSavedProject = useCallback(async () => {
+    if (window.electronAPI?.openProjectFile) {
+      try {
+        const result = await window.electronAPI.openProjectFile();
+        if (!result) return;
+        const parsed = JSON.parse(result.content) as Partial<SavedProjectFile>;
+        openParsedProject(parsed, { path: result.path, fileName: result.name });
+      } catch (err: any) {
+        console.error(err);
+        alert("Could not open this project file.");
+      }
+      return;
+    }
+
     if ("showOpenFilePicker" in window) {
       try {
         const [handle] = await (window as any).showOpenFilePicker({
@@ -547,10 +789,7 @@ export default function App() {
         });
         const file = await handle.getFile();
         const parsed = JSON.parse(await file.text()) as Partial<SavedProjectFile>;
-        if (!validateProjectData(parsed)) throw new Error("Invalid project file");
-        applyProjectData(parsed);
-        setProjectFileHandle(handle);
-        setActiveProjectStarted(true);
+        openParsedProject(parsed, { handle, fileName: file.name });
       } catch (err: any) {
         if (err.name !== "AbortError") {
           console.error(err);
@@ -560,7 +799,25 @@ export default function App() {
     } else {
       projectFileInputRef.current?.click();
     }
-  }, [applyProjectData]);
+  }, [openParsedProject]);
+
+  const onOpenRecentProject = useCallback(async (recent: RecentProject) => {
+    if (recent.path && window.electronAPI?.readProjectFile) {
+      try {
+        const result = await window.electronAPI.readProjectFile(recent.path);
+        const parsed = JSON.parse(result.content) as Partial<SavedProjectFile>;
+        openParsedProject(parsed, { path: result.path, fileName: result.name });
+      } catch (error: any) {
+        console.error(error);
+        alert(error?.message ?? "Could not reopen this project.");
+        forgetRecentProject(recent.id);
+      }
+      return;
+    }
+
+    alert("This recent project needs to be selected again from disk.");
+    projectFileInputRef.current?.click();
+  }, [forgetRecentProject, openParsedProject]);
 
   const onProjectFolderSelected = useCallback(
     async (e: ChangeEvent<HTMLInputElement>) => {
@@ -605,17 +862,14 @@ export default function App() {
     if (!file) return;
     try {
       const parsed = JSON.parse(await file.text()) as Partial<SavedProjectFile>;
-      if (!validateProjectData(parsed)) throw new Error("Invalid project file");
-      applyProjectData(parsed);
-      setProjectFileHandle(null);
-      setActiveProjectStarted(true);
+      openParsedProject(parsed, { fileName: file.name });
     } catch (error) {
       console.error(error);
       alert("Could not open this project file.");
     } finally {
       e.target.value = "";
     }
-  }, [applyProjectData]);
+  }, [openParsedProject]);
 
   const saveProject = useCallback(async () => {
     const payload: SavedProjectFile = {
@@ -629,6 +883,7 @@ export default function App() {
       graph,
       nodeCode,
       workspaceFiles,
+      dockerSettings,
     };
     const json = JSON.stringify(payload, null, 2);
 
@@ -661,7 +916,7 @@ export default function App() {
 
     // Fallback for browsers without File System Access API
     saveAs(new Blob([json], { type: "application/json;charset=utf-8" }), `${projectName || "project"}.archbuilder.json`);
-  }, [buildTool, javaVersion, springBootVersion, graph, nodeCode, projectName, prompt, projectFileHandle, workspaceFiles]);
+  }, [buildTool, dockerSettings, javaVersion, springBootVersion, graph, nodeCode, projectName, prompt, projectFileHandle, workspaceFiles]);
 
   /* =======================
      EXPORT TO IDE ZIP
@@ -678,6 +933,7 @@ export default function App() {
       springBootVersion,
       buildTool,
       generatedFiles,
+      docker: dockerSettings,
     });
 
     // 3. Embed the prompt as a reference file
@@ -699,6 +955,7 @@ export default function App() {
         graph,
         nodeCode,
         workspaceFiles,
+        dockerSettings,
       }, null, 2),
     }];
 
@@ -711,7 +968,7 @@ export default function App() {
     const dedupedFiles = Array.from(fileMap.entries()).map(([path, content]) => ({ path, content }));
 
     await zipService.download(dedupedFiles, projectName);
-  }, [buildTool, javaVersion, springBootVersion, graph, nodeCode, projectName, prompt, scaffoldService, workspaceFiles, zipService]);
+  }, [buildTool, dockerSettings, javaVersion, springBootVersion, graph, nodeCode, projectName, prompt, scaffoldService, workspaceFiles, zipService]);
 
   const getRunnableProjectFiles = useCallback(() => {
     const generatedFiles = (workspaceFiles.length > 0 ? workspaceFiles : Object.values(nodeCode).flat())
@@ -725,14 +982,123 @@ export default function App() {
       springBootVersion,
       buildTool,
       generatedFiles,
+      docker: dockerSettings,
     });
 
     return dedupeFiles([...scaffoldFiles, ...generatedFiles]);
-  }, [buildTool, javaVersion, nodeCode, projectName, scaffoldService, springBootVersion, workspaceFiles]);
+  }, [buildTool, dockerSettings, javaVersion, nodeCode, projectName, scaffoldService, springBootVersion, workspaceFiles]);
+
+  const runTopbarGit = useCallback(async (args: string[], filesOverride?: WorkspaceFile[]) => {
+    if (!window.electronAPI?.runGit) {
+      if (!window.electronAPI) {
+        alert("Git operations are only available in the Electron desktop app, not the browser.");
+      } else {
+        alert("Git IPC handler not loaded. Quit and restart the Electron app so the latest preload is applied.");
+      }
+      return null;
+    }
+
+    return window.electronAPI.runGit({
+      projectName,
+      files: filesOverride ?? getRunnableProjectFiles(),
+      args,
+    });
+  }, [getRunnableProjectFiles, projectName]);
+
+  const refreshTopbarGit = useCallback(async (filesOverride?: WorkspaceFile[]) => {
+    if (!window.electronAPI?.runGit) return;
+
+    const files = filesOverride ?? getRunnableProjectFiles();
+    const base = { projectName, files };
+    const [status, branchList] = await Promise.all([
+      window.electronAPI.runGit({ ...base, args: ["status", "--short", "--branch"] }),
+      window.electronAPI.runGit({ ...base, args: ["branch", "--list"] }),
+    ]);
+
+    const parsedBranches = branchList.stdout.split(/\r?\n/)
+      .map(line => line.trim())
+      .filter(Boolean)
+      .map(line => line.replace(/^\*\s*/, ""));
+    const active = branchList.stdout.split(/\r?\n/).find(line => line.startsWith("* "));
+    const activeBranch = active?.replace(/^\*\s*/, "").trim();
+
+    setGitRepositoryReady(status.isRepository || branchList.isRepository);
+    setTopbarGitBranches(parsedBranches);
+    if (activeBranch) {
+      setTopbarGitCurrentBranch(activeBranch);
+      setTopbarGitTargetBranch(prev => prev && parsedBranches.includes(prev) ? prev : activeBranch);
+    }
+  }, [getRunnableProjectFiles, projectName]);
+
+  const runTopbarGitOperation = useCallback(async () => {
+    const runnableFiles = getRunnableProjectFiles();
+    const currentBranch = topbarGitCurrentBranch || "main";
+    const targetBranch = topbarGitTargetBranch || currentBranch;
+
+    const run = async (args: string[]) => runTopbarGit(args, runnableFiles);
+
+    setTopbarGitBusy(true);
+    try {
+      if (topbarGitOperation === "init") {
+        const result = await run(["init"]);
+        if (result?.ok || result?.isRepository) {
+          await run(["branch", "-M", currentBranch]);
+          setGitRepositoryReady(true);
+          setWorkspaceView("editor");
+        }
+      } else if (topbarGitOperation === "status") {
+        await refreshTopbarGit(runnableFiles);
+      } else if (topbarGitOperation === "fetch") {
+        await run(["fetch", "--all", "--prune"]);
+      } else if (topbarGitOperation === "set-origin") {
+        const url = topbarGitRemoteUrl.trim();
+        if (!url) {
+          alert("Enter an origin remote URL first.");
+          return;
+        }
+        await run(["remote", "remove", "origin"]);
+        await run(["remote", "add", "origin", url]);
+      } else if (topbarGitOperation === "pull") {
+        await run(["pull", "origin", currentBranch]);
+      } else if (topbarGitOperation === "push") {
+        await run(["push", "-u", "origin", currentBranch]);
+      } else if (topbarGitOperation === "rebase") {
+        await run(["rebase", targetBranch]);
+      } else if (topbarGitOperation === "merge") {
+        await run(["merge", targetBranch]);
+      } else if (topbarGitOperation === "stash") {
+        await run(["stash", "push", "-u", "-m", "Archiviz workspace snapshot"]);
+      } else if (topbarGitOperation === "stash-pop") {
+        await run(["stash", "pop"]);
+      } else if (topbarGitOperation === "abort-rebase") {
+        await run(["rebase", "--abort"]);
+      } else if (topbarGitOperation === "abort-merge") {
+        await run(["merge", "--abort"]);
+      }
+
+      await refreshTopbarGit(runnableFiles);
+    } catch (error: any) {
+      alert(error?.message ?? "Git operation failed.");
+    } finally {
+      setTopbarGitBusy(false);
+    }
+  }, [
+    getRunnableProjectFiles,
+    refreshTopbarGit,
+    runTopbarGit,
+    topbarGitCurrentBranch,
+    topbarGitOperation,
+    topbarGitRemoteUrl,
+    topbarGitTargetBranch,
+  ]);
 
   const runProjectCommand = useCallback(async (mode: "build" | "run") => {
     if (!window.electronAPI?.materializeWorkspace) {
-      alert("Build and Run are available in the Electron desktop app.");
+      if (!window.electronAPI) {
+        alert("Build and Run are only available in the Electron desktop app, not the browser.");
+      } else {
+        alert("Build/Run IPC handler not loaded. Quit and restart the Electron app so the latest preload is applied.");
+      }
       return;
     }
 
@@ -762,7 +1128,10 @@ export default function App() {
       }));
     } catch (error: any) {
       console.error("[runner]", error);
-      alert(error?.message ?? "Could not start the project runner.");
+      const message = String(error?.message ?? "");
+      alert(message.includes("No handler registered for 'workspace:materialize'")
+        ? "Build/Run support was added to Electron. Restart the desktop app with npm run dev so the main process can load the new IPC handler."
+        : message || "Could not start the project runner.");
     } finally {
       setRunnerBusy(false);
     }
@@ -948,6 +1317,45 @@ export default function App() {
                 Open Project
               </button>
             </div>
+            <div className="startup-history">
+              <div className="startup-history-header">
+                <span>Recent Projects</span>
+                {recentProjects.length > 0 && (
+                  <button
+                    className="startup-history-clear"
+                    onClick={() => {
+                      setRecentProjects([]);
+                      localStorage.removeItem(RECENT_PROJECTS_KEY);
+                    }}
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
+              {recentProjects.length > 0 ? (
+                <div className="startup-history-list">
+                  {recentProjects.map(recent => (
+                    <button
+                      key={recent.id}
+                      className="startup-history-item"
+                      onClick={() => void onOpenRecentProject(recent)}
+                      title={recent.path || recent.fileName || recent.name}
+                    >
+                      <span className="startup-history-icon">AR</span>
+                      <span className="startup-history-main">
+                        <span className="startup-history-name">{recent.name}</span>
+                        <span className="startup-history-path">{recent.path || recent.fileName || "Select from disk to reopen"}</span>
+                      </span>
+                      <span className="startup-history-date">
+                        {new Date(recent.openedAt).toLocaleDateString()}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <div className="startup-history-empty">Opened projects will appear here.</div>
+              )}
+            </div>
           </div>
         </div>
       )}
@@ -965,8 +1373,6 @@ export default function App() {
         canGenerate={hasCanvasContent}
         canSaveProject={hasProjectData}
         importingProject={importingProject}
-        theme={theme}
-        setTheme={setTheme}
         javaVersion={javaVersion}
         setJavaVersion={setJavaVersion}
         springBootVersion={springBootVersion}
@@ -981,85 +1387,119 @@ export default function App() {
         onImportProject={onLoadProject}
         onSaveProject={saveProject}
         onExportProject={exportProject}
+        gitRepositoryReady={gitRepositoryReady}
+        gitBusy={topbarGitBusy}
+        gitOperation={topbarGitOperation}
+        setGitOperation={setTopbarGitOperation}
+        gitRemoteUrl={topbarGitRemoteUrl}
+        setGitRemoteUrl={setTopbarGitRemoteUrl}
+        gitCurrentBranch={topbarGitCurrentBranch}
+        gitTargetBranch={topbarGitTargetBranch}
+        setGitTargetBranch={setTopbarGitTargetBranch}
+        gitBranches={topbarGitBranches}
+        onRunGitOperation={runTopbarGitOperation}
       />
 
       <div className="main">
         <div className="workspace-shell">
-          <nav className="workspace-rail" aria-label="Workspace views">
-            <button
-              className={`workspace-rail-btn ${workspaceView === "canvas" ? "active" : ""}`}
-              onClick={() => setWorkspaceView("canvas")}
-              title="Components"
-              aria-label="Components"
-              aria-pressed={workspaceView === "canvas"}
-            >
-              <span className="workspace-rail-icon">C</span>
-              <span className="workspace-rail-label">Components</span>
-            </button>
-            <button
-              className={`workspace-rail-btn ${workspaceView === "editor" ? "active" : ""}`}
-              onClick={() => setWorkspaceView("editor")}
-              title="Code editor"
-              aria-label="Code editor"
-              aria-pressed={workspaceView === "editor"}
-            >
-              <span className="workspace-rail-icon">E</span>
-              <span className="workspace-rail-label">Editor</span>
-            </button>
-          </nav>
+          <div className="workspace-content">
+            <nav className="workspace-rail" aria-label="Workspace views">
+              <button
+                className={`workspace-rail-btn ${workspaceView === "canvas" ? "active" : ""}`}
+                onClick={() => toggleWorkspaceView("canvas")}
+                title={workspaceView === "canvas" ? "Close components" : "Open components"}
+                aria-label="Components"
+                aria-pressed={workspaceView === "canvas"}
+              >
+                <span className="workspace-rail-icon">C</span>
+                <span className="workspace-rail-label">Components</span>
+              </button>
+              <button
+                className={`workspace-rail-btn ${workspaceView === "editor" ? "active" : ""}`}
+                onClick={() => toggleWorkspaceView("editor")}
+                title={workspaceView === "editor" ? "Close editor" : "Open editor"}
+                aria-label="Code editor"
+                aria-pressed={workspaceView === "editor"}
+              >
+                <span className="workspace-rail-icon">E</span>
+                <span className="workspace-rail-label">Editor</span>
+              </button>
+              <button
+                className={`workspace-rail-btn ${workspaceView === "api" ? "active" : ""}`}
+                onClick={() => toggleWorkspaceView("api")}
+                title={workspaceView === "api" ? "Close API tester" : "Open API tester"}
+                aria-label="API tester"
+                aria-pressed={workspaceView === "api"}
+              >
+                <span className="workspace-rail-icon">API</span>
+                <span className="workspace-rail-label">API</span>
+              </button>
+            </nav>
 
-          {workspaceView === "canvas" && (
-            <aside className="workspace-side-pane">
-              <Palette embedded />
-            </aside>
-          )}
-
-          <div className="workspace-main">
-            {workspaceView === "canvas" ? (
-              <Canvas
-                canvasRef={canvasRef}
-                graph={graph}
-                camera={camera}
-                selectedIds={selectedIds}
-                selectedEdgeId={selectedEdgeId}
-                wire={wire}
-                onDrop={onDrop}
-                onDragOver={onDragOver}
-                onDelete={onDelete}
-                onRename={onRename}
-                onConfigure={setConfiguringNodeId}
-                onViewCode={setViewingNodeId}
-                generatedNodeIds={new Set(Object.keys(nodeCode))}
-                startWire={startWire}
-                moveWire={movePointerInteraction}
-                onNodePointerDown={onNodePointerDown}
-                onEdgePointerDown={onEdgePointerDown}
-                onCanvasPointerDown={onCanvasPointerDown}
-                onCanvasWheel={onCanvasWheel}
-                onZoomIn={zoomIn}
-                onZoomOut={zoomOut}
-                onResetCamera={resetCamera}
-                onClearCanvas={clearCanvas}
-              />
-            ) : (
-              <FileWorkspace
-                files={workspaceFiles}
-                activePath={activeWorkspacePath}
-                onActivePathChange={setActiveWorkspacePath}
-                onFilesChange={setWorkspaceFiles}
-                editorTheme={theme}
-                onBuildProject={() => void runProjectCommand("build")}
-                onRunProject={() => void runProjectCommand("run")}
-                runnerBusy={runnerBusy}
-              />
+            {workspaceView === "canvas" && (
+              <aside className="workspace-side-pane">
+                <Palette embedded workspaceFiles={workspaceFiles} />
+              </aside>
             )}
+
+            <div className="workspace-main">
+              {workspaceView === "editor" ? (
+                <FileWorkspace
+                  files={getRunnableProjectFiles()}
+                  activePath={activeWorkspacePath}
+                  onActivePathChange={setActiveWorkspacePath}
+                  onFilesChange={setWorkspaceFiles}
+                  editorTheme="dark"
+                  editorSettings={editorSettings}
+                  showGitFolder={gitRepositoryReady}
+                  onBuildProject={() => void runProjectCommand("build")}
+                  onRunProject={() => void runProjectCommand("run")}
+                  runnerBusy={runnerBusy}
+                />
+              ) : workspaceView === "api" ? (
+                <ApiTester files={workspaceFiles.length > 0 ? workspaceFiles : Object.values(nodeCode).flat()} />
+              ) : (
+                <Canvas
+                  canvasRef={canvasRef}
+                  graph={graph}
+                  camera={camera}
+                  selectedIds={selectedIds}
+                  selectedEdgeId={selectedEdgeId}
+                  wire={wire}
+                  onDrop={onDrop}
+                  onDragOver={onDragOver}
+                  onDelete={onDelete}
+                  onRename={onRename}
+                  onConfigure={setConfiguringNodeId}
+                  onViewCode={setViewingNodeId}
+                  generatedNodeIds={new Set(Object.keys(nodeCode))}
+                  startWire={startWire}
+                  moveWire={movePointerInteraction}
+                  onNodePointerDown={onNodePointerDown}
+                  onEdgePointerDown={onEdgePointerDown}
+                  onCanvasPointerDown={onCanvasPointerDown}
+                  onCanvasWheel={onCanvasWheel}
+                  onZoomIn={zoomIn}
+                  onZoomOut={zoomOut}
+                  onResetCamera={resetCamera}
+                  onClearCanvas={clearCanvas}
+                />
+              )}
+            </div>
           </div>
+
+          <TerminalDock terminalSettings={terminalSettings} />
         </div>
 
         <CodePanel
           prompt={prompt}
           setPrompt={setPrompt}
           filesCount={workspaceFiles.length}
+          projectName={projectName}
+          files={getRunnableProjectFiles()}
+          gitSettings={gitSettings}
+          gitRepositoryReady={gitRepositoryReady}
+          onGitRepositoryChange={setGitRepositoryReady}
           onGenerateProject={generateProjectWithAI}
           onOpenEditor={() => setWorkspaceView("editor")}
           aiGenerating={projectGenerating}
@@ -1067,12 +1507,21 @@ export default function App() {
         />
       </div>
 
-      <TerminalDock />
-
       {showSettings && (
         <div className="modal" onClick={() => setShowSettings(false)}>
           <div onClick={(e) => e.stopPropagation()}>
             <Settings
+              theme={theme}
+              setTheme={setTheme}
+              editorSettings={editorSettings}
+              setEditorSettings={setEditorSettings}
+              terminalSettings={terminalSettings}
+              setTerminalSettings={setTerminalSettings}
+              dockerSettings={dockerSettings}
+              setDockerSettings={setDockerSettings}
+              gitSettings={gitSettings}
+              setGitSettings={setGitSettings}
+              onClose={() => setShowSettings(false)}
               onSave={(s) => {
                 setSettings(s);
                 setShowSettings(false);

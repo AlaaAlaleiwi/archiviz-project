@@ -1,5 +1,6 @@
 {
   "name": "archiviz",
+  "productName": "Archiviz",
   "private": true,
   "version": "1.0.0",
   "type": "module",
@@ -47,14 +48,22 @@
     "vite": "^8.0.4"
   },
   "build": {
-    "appId": "com.arch.app",
-    "productName": "ArchitectureApp",
+    "appId": "com.archiviz.app",
+    "productName": "Archiviz",
     "files": [
       "dist/**/*",
-      "electron/**/*"
+      "electron/**/*",
+      "src/assets/ArchBuilder.ico",
+      "build/**/*"
     ],
     "mac": {
       "target": "dmg"
+    },
+    "win": {
+      "icon": "src/assets/ArchBuilder.ico"
+    },
+    "linux": {
+      "icon": "build/ArchBuilder.png"
     }
   }
 }

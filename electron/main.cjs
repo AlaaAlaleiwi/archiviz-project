@@ -3,11 +3,26 @@ const path = require("path");
 const fs = require("fs");
 const os = require("os");
 const pty = require("node-pty");
+const { execFile } = require("child_process");
 
 let win;
 const terminals = new Map();
 
 const isDev = !app.isPackaged;
+const APP_NAME = "Archiviz";
+const ICON_ICO_PATH = path.join(__dirname, "../src/assets/ArchBuilder.ico");
+const ICON_PNG_PATH = path.join(__dirname, "../build/ArchBuilder.png");
+
+process.title = APP_NAME;
+app.setName(APP_NAME);
+app.setAppUserModelId("com.archiviz.app");
+if (typeof app.setDesktopName === "function") {
+  app.setDesktopName("Archiviz.desktop");
+}
+
+function getWindowIconPath() {
+  return process.platform === "win32" ? ICON_ICO_PATH : ICON_PNG_PATH;
+}
 
 function fileExists(filePath) {
   try {
@@ -65,6 +80,40 @@ function safeWriteWorkspaceFile(rootDir, filePath, content) {
   fs.writeFileSync(targetPath, String(content ?? ""), "utf-8");
 }
 
+function syncWorkspaceFiles(rootDir, files) {
+  fs.mkdirSync(rootDir, { recursive: true });
+  for (const file of files) {
+    if (!file || typeof file.path !== "string") continue;
+    safeWriteWorkspaceFile(rootDir, file.path, file.content);
+  }
+}
+
+function getGitWorkspaceRoot(projectName) {
+  return path.join(
+    app.getPath("userData"),
+    "git-workspaces",
+    sanitizeProjectName(projectName)
+  );
+}
+
+function isGitRepository(rootDir) {
+  return fs.existsSync(path.join(rootDir, ".git"));
+}
+
+function runGit(cwd, args = []) {
+  return new Promise((resolve) => {
+    execFile("git", args.map(String), { cwd, maxBuffer: 1024 * 1024 * 10 }, (error, stdout, stderr) => {
+      resolve({
+        ok: !error,
+        code: typeof error?.code === "number" ? error.code : 0,
+        stdout,
+        stderr: stderr || error?.message || "",
+        command: `git ${args.join(" ")}`,
+      });
+    });
+  });
+}
+
 function ensureNodePtyHelperExecutable() {
   if (process.platform === "win32") return;
 
@@ -89,7 +138,8 @@ function createWindow() {
   win = new BrowserWindow({
     width: 1200,
     height: 800,
-    icon: path.join(__dirname, "../build/icon.png"),
+    title: APP_NAME,
+    icon: getWindowIconPath(),
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
@@ -151,6 +201,23 @@ function setupMenu() {
     },
   ];
 
+  if (process.platform === "darwin") {
+    template.unshift({
+      label: APP_NAME,
+      submenu: [
+        { role: "about", label: `About ${APP_NAME}` },
+        { type: "separator" },
+        { role: "services" },
+        { type: "separator" },
+        { role: "hide", label: `Hide ${APP_NAME}` },
+        { role: "hideOthers" },
+        { role: "unhide" },
+        { type: "separator" },
+        { role: "quit", label: `Quit ${APP_NAME}` },
+      ],
+    });
+  }
+
   const menu = Menu.buildFromTemplate(template);
   Menu.setApplicationMenu(menu);
 }
@@ -165,7 +232,9 @@ ipcMain.handle("terminal:create", async (_event, options = {}) => {
   const cwd = getTerminalCwd(options.cwd);
   const cols = Number(options.cols) || 80;
   const rows = Number(options.rows) || 24;
-  const candidates = getShellCandidates();
+  const candidates = options.shell
+    ? [options.shell, ...getShellCandidates()]
+    : getShellCandidates();
   let term = null;
   let shell = null;
   let lastError = null;
@@ -245,14 +314,114 @@ ipcMain.handle("workspace:materialize", async (_event, options = {}) => {
   );
 
   fs.rmSync(rootDir, { recursive: true, force: true });
-  fs.mkdirSync(rootDir, { recursive: true });
-
-  for (const file of files) {
-    if (!file || typeof file.path !== "string") continue;
-    safeWriteWorkspaceFile(rootDir, file.path, file.content);
-  }
+  syncWorkspaceFiles(rootDir, files);
 
   return { cwd: rootDir, displayPath: rootDir.replace(os.homedir(), "~") };
+});
+
+/* ─────────────────────────────
+   IPC (GIT)
+───────────────────────────── */
+ipcMain.handle("git:run", async (_event, options = {}) => {
+  const files = Array.isArray(options.files) ? options.files : [];
+  const args = Array.isArray(options.args) ? options.args.map(String).filter(Boolean) : [];
+
+  if (args.length === 0) {
+    throw new Error("No git arguments were provided.");
+  }
+
+  const rootDir = getGitWorkspaceRoot(options.projectName);
+  syncWorkspaceFiles(rootDir, files);
+
+  const result = await runGit(rootDir, args);
+  return {
+    ...result,
+    cwd: rootDir,
+    displayPath: rootDir.replace(os.homedir(), "~"),
+    isRepository: isGitRepository(rootDir),
+  };
+});
+
+/* ─────────────────────────────
+   IPC (API TESTER)
+───────────────────────────── */
+ipcMain.handle("api:request", async (_event, request = {}) => {
+  const method = String(request.method || "GET").toUpperCase();
+  const url = new URL(String(request.url || ""));
+
+  if (!["http:", "https:"].includes(url.protocol)) {
+    throw new Error("Only HTTP and HTTPS URLs are supported.");
+  }
+
+  const controller = new AbortController();
+  const timeoutMs = Math.max(1000, Math.min(Number(request.timeoutMs) || 30000, 120000));
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const startedAt = Date.now();
+
+  try {
+    const response = await fetch(url.toString(), {
+      method,
+      headers: request.headers || {},
+      body: method === "GET" || method === "HEAD" ? undefined : request.body,
+      signal: controller.signal,
+    });
+
+    const body = await response.text();
+    return {
+      status: response.status,
+      statusText: response.statusText,
+      durationMs: Date.now() - startedAt,
+      headers: Object.fromEntries(response.headers.entries()),
+      body,
+      url: response.url,
+    };
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      throw new Error(`Request timed out after ${timeoutMs}ms.`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+});
+
+/* ─────────────────────────────
+   IPC (PROJECT FILES)
+───────────────────────────── */
+ipcMain.handle("project:open-file", async () => {
+  const result = await dialog.showOpenDialog(win, {
+    title: "Open ArchBuilder Project",
+    properties: ["openFile"],
+    filters: [
+      { name: "ArchBuilder Project", extensions: ["json"] },
+      { name: "JSON", extensions: ["json"] },
+    ],
+  });
+
+  if (result.canceled || result.filePaths.length === 0) return null;
+
+  const filePath = result.filePaths[0];
+  return {
+    path: filePath,
+    name: path.basename(filePath),
+    content: fs.readFileSync(filePath, "utf-8"),
+  };
+});
+
+ipcMain.handle("project:read-file", async (_event, filePath) => {
+  if (!filePath || typeof filePath !== "string") {
+    throw new Error("No project path was provided.");
+  }
+
+  if (!fs.existsSync(filePath)) {
+    throw new Error("This project file no longer exists.");
+  }
+
+  return {
+    path: filePath,
+    name: path.basename(filePath),
+    content: fs.readFileSync(filePath, "utf-8"),
+  };
 });
 
 /* ─────────────────────────────
@@ -266,7 +435,18 @@ ipcMain.handle("save-project", async (event, data, filePath) => {
 /* ─────────────────────────────
    APP LIFECYCLE
 ───────────────────────────── */
-app.whenReady().then(createWindow);
+app.whenReady().then(() => {
+  app.setName(APP_NAME);
+  app.setAboutPanelOptions({
+    applicationName: APP_NAME,
+    applicationVersion: app.getVersion(),
+    iconPath: getWindowIconPath(),
+  });
+  if (process.platform === "darwin" && app.dock) {
+    app.dock.setIcon(ICON_PNG_PATH);
+  }
+  createWindow();
+});
 
 app.on("window-all-closed", () => {
   for (const term of terminals.values()) term.kill();

@@ -1,25 +1,26 @@
-import { useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { WorkspaceFile } from "./FileWorkspace";
+import type { GitSettings } from "./Settings";
 import "../styles.css";
 
 type PanelTab = "prompt" | "git";
 
-type GitCommit = {
-  id: string;
-  branch: string;
-  message: string;
-  createdAt: string;
+type CodePanelProps = {
+  prompt: string;
+  setPrompt: (prompt: string) => void;
+  filesCount: number;
+  projectName: string;
+  files: WorkspaceFile[];
+  gitSettings: GitSettings;
+  gitRepositoryReady: boolean;
+  onGitRepositoryChange?: (isRepository: boolean) => void;
+  onGenerateProject: () => Promise<void>;
+  onOpenEditor: () => void;
+  aiGenerating: boolean;
+  canGenerateProject: boolean;
 };
 
-type GitBranch = {
-  name: string;
-  commitCount: number;
-};
-
-type GitHubUser = {
-  login: string;
-  avatar_url?: string;
-  html_url?: string;
-};
+type GitChange = { code: string; path: string };
 
 type GitHubStatus = {
   kind: "idle" | "success" | "error";
@@ -27,20 +28,72 @@ type GitHubStatus = {
   url?: string;
 };
 
-type CodePanelProps = {
-  prompt: string;
-  setPrompt: (prompt: string) => void;
-  filesCount: number;
-  onGenerateProject: () => Promise<void>;
-  onOpenEditor: () => void;
-  aiGenerating: boolean;
-  canGenerateProject: boolean;
+const hashText = (value: string) => {
+  let hash = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    hash = ((hash << 5) - hash + value.charCodeAt(index)) | 0;
+  }
+  return hash.toString(36);
+};
+
+const getFilesSignature = (files: WorkspaceFile[]) => files
+  .map(file => `${file.path}:${file.content.length}:${hashText(file.content)}`)
+  .join("|");
+
+const getStatusPath = (line: string) => {
+  const rawPath = line.slice(3).trim();
+  const renameArrow = " -> ";
+  return rawPath.includes(renameArrow) ? rawPath.split(renameArrow).pop() ?? rawPath : rawPath;
+};
+
+const basename = (path: string) => path.split("/").pop() ?? path;
+
+const parseGitChanges = (statusText: string): GitChange[] =>
+  statusText
+    .split(/\r?\n/)
+    .filter(line => line && !line.startsWith("##"))
+    .map(line => ({ code: line.slice(0, 2).trim(), path: getStatusPath(line) }))
+    .filter(c => c.path);
+
+const changeStyle = (code: string): { label: string; cls: string } => {
+  if (code.includes("M")) return { label: "M", cls: "modified" };
+  if (code.includes("A")) return { label: "A", cls: "added" };
+  if (code.includes("D")) return { label: "D", cls: "deleted" };
+  if (code.includes("R")) return { label: "R", cls: "renamed" };
+  if (code.includes("?")) return { label: "?", cls: "untracked" };
+  return { label: code || "~", cls: "modified" };
+};
+
+const buildCommitSuggestion = (statusText: string) => {
+  const changes = parseGitChanges(statusText);
+  if (changes.length === 0) return { message: "", count: 0 };
+
+  const firstName = basename(changes[0].path);
+  const hasOnlyNew = changes.every(c => c.code.includes("?") || c.code.includes("A"));
+  const hasOnlyDeleted = changes.every(c => c.code.includes("D"));
+  const hasOnlyModified = changes.every(c => c.code.includes("M"));
+
+  if (changes.length === 1) {
+    if (hasOnlyNew) return { message: `Add ${firstName}`, count: 1 };
+    if (hasOnlyDeleted) return { message: `Remove ${firstName}`, count: 1 };
+    return { message: `Update ${firstName}`, count: 1 };
+  }
+
+  if (hasOnlyNew) return { message: `Add ${changes.length} project files`, count: changes.length };
+  if (hasOnlyDeleted) return { message: `Remove ${changes.length} project files`, count: changes.length };
+  if (hasOnlyModified) return { message: `Update ${changes.length} project files`, count: changes.length };
+  return { message: `Update ${changes.length} project files`, count: changes.length };
 };
 
 export default function CodePanel({
   prompt,
   setPrompt,
   filesCount,
+  projectName,
+  files,
+  gitSettings,
+  gitRepositoryReady,
+  onGitRepositoryChange,
   onGenerateProject,
   onOpenEditor,
   aiGenerating,
@@ -48,97 +101,131 @@ export default function CodePanel({
 }: CodePanelProps) {
   const [isOpen, setIsOpen] = useState(true);
   const [activeTab, setActiveTab] = useState<PanelTab>("prompt");
-  const [branchName, setBranchName] = useState("");
   const [commitMessage, setCommitMessage] = useState("");
   const [currentBranch, setCurrentBranch] = useState("main");
-  const [branches, setBranches] = useState<GitBranch[]>([{ name: "main", commitCount: 0 }]);
-  const [commits, setCommits] = useState<GitCommit[]>([]);
-  const [githubToken, setGithubToken] = useState("");
-  const [githubUser, setGithubUser] = useState<GitHubUser | null>(null);
-  const [githubStatus, setGithubStatus] = useState<GitHubStatus>({ kind: "idle", message: "" });
-  const [repoName, setRepoName] = useState("");
+  const [commits, setCommits] = useState<string[]>([]);
+  const [gitStatusText, setGitStatusText] = useState("");
+  const [gitOutput, setGitOutput] = useState("");
+  const [gitBusy, setGitBusy] = useState(false);
+  const [customGitArgs, setCustomGitArgs] = useState("");
+  const [gitInitialized, setGitInitialized] = useState(gitRepositoryReady);
+  const [suggestedCommitMessage, setSuggestedCommitMessage] = useState("");
+  const [changedFilesCount, setChangedFilesCount] = useState(0);
+  const [pendingRefresh, setPendingRefresh] = useState(false);
+  const [repoName, setRepoName] = useState(projectName);
   const [repoDescription, setRepoDescription] = useState("");
   const [repoPrivate, setRepoPrivate] = useState(false);
   const [githubBusy, setGithubBusy] = useState(false);
+  const [githubStatus, setGithubStatus] = useState<GitHubStatus>({ kind: "idle", message: "" });
+  const lastSuggestedCommitRef = useRef("");
+  const filesSignature = useMemo(() => getFilesSignature(files), [files]);
 
-  const createBranch = () => {
-    const nextName = branchName.trim();
-    if (!nextName || branches.some(branch => branch.name === nextName)) return;
-    setBranches(prev => [...prev, { name: nextName, commitCount: 0 }]);
-    setCurrentBranch(nextName);
-    setBranchName("");
+  const gitChanges = useMemo(() => parseGitChanges(gitStatusText), [gitStatusText]);
+
+  const splitGitArgs = (value: string) =>
+    value.match(/(?:[^\s"]+|"[^"]*")+/g)?.map(part => part.replace(/^"|"$/g, "")) ?? [];
+
+  const runGit = async (args: string[], refresh = true) => {
+    if (!window.electronAPI?.runGit) {
+      setGitOutput("Git operations require the Electron desktop app.");
+      return null;
+    }
+    const isInitCommand = args[0] === "init";
+    if (files.length === 0 && !isInitCommand) {
+      setGitOutput("Generate project files before running Git operations.");
+      return null;
+    }
+    setGitBusy(true);
+    try {
+      const result = await window.electronAPI.runGit({ projectName, files, args });
+      const output = [result.command, result.stdout, result.stderr].filter(Boolean).join("\n\n");
+      setGitOutput(output || `${result.command}\n\nDone.`);
+      setGitInitialized(result.isRepository);
+      onGitRepositoryChange?.(result.isRepository);
+      if (refresh) await refreshGit(false, false);
+      return result;
+    } catch (error: any) {
+      setGitOutput(error?.message ?? "Git operation failed.");
+      return null;
+    } finally {
+      setGitBusy(false);
+    }
   };
 
-  const createCommit = () => {
+  const refreshGit = async (showOutput = true, showBusy = true) => {
+    if (!window.electronAPI?.runGit) {
+      if (showOutput) setGitOutput("No Git workspace available.");
+      return;
+    }
+    if (showBusy) setGitBusy(true);
+    try {
+      const base = { projectName, files };
+      const [status, branchList, log] = await Promise.all([
+        window.electronAPI.runGit({ ...base, args: ["status", "--short", "--branch"] }),
+        window.electronAPI.runGit({ ...base, args: ["branch", "--list"] }),
+        window.electronAPI.runGit({ ...base, args: ["log", "--oneline", "-10"] }),
+      ]);
+
+      const statusText = status.stdout || status.stderr || "";
+      const suggestion = buildCommitSuggestion(status.stdout);
+      setGitStatusText(statusText);
+      setSuggestedCommitMessage(suggestion.message);
+      setChangedFilesCount(suggestion.count);
+      setCommitMessage(prev => {
+        const shouldReplace = !prev.trim() || prev === lastSuggestedCommitRef.current;
+        return shouldReplace ? suggestion.message : prev;
+      });
+      lastSuggestedCommitRef.current = suggestion.message;
+      const nextInitialized = status.isRepository || branchList.isRepository || log.isRepository;
+      setGitInitialized(nextInitialized);
+      onGitRepositoryChange?.(nextInitialized);
+      const active = branchList.stdout.split(/\r?\n/).find(line => line.startsWith("* "));
+      if (active) setCurrentBranch(active.replace(/^\*\s*/, "").trim());
+      setCommits(log.stdout.split(/\r?\n/).filter(Boolean));
+      if (showOutput) setGitOutput([status.command, status.stdout, status.stderr].filter(Boolean).join("\n\n"));
+    } catch (error: any) {
+      if (showOutput) setGitOutput(error?.message ?? "Could not refresh Git status.");
+    } finally {
+      if (showBusy) setGitBusy(false);
+    }
+  };
+
+  const initRepo = async () => {
+    await runGit(["init"]);
+  };
+
+  const createCommit = async () => {
     const message = commitMessage.trim();
     if (!message) return;
-
-    const commit: GitCommit = {
-      id: Math.random().toString(36).slice(2, 9),
-      branch: currentBranch,
-      message,
-      createdAt: new Date().toLocaleString(),
-    };
-
-    setCommits(prev => [commit, ...prev]);
-    setBranches(prev => prev.map(branch =>
-      branch.name === currentBranch ? { ...branch, commitCount: branch.commitCount + 1 } : branch
-    ));
+    await runGit(["add", "-A"], false);
+    const result = await runGit(["commit", "-m", message]);
+    if (!result?.ok) return;
     setCommitMessage("");
+    setSuggestedCommitMessage("");
+    setChangedFilesCount(0);
+    lastSuggestedCommitRef.current = "";
   };
 
-  const githubHeaders = (token = githubToken.trim()) => ({
-    Accept: "application/vnd.github+json",
-    Authorization: `Bearer ${token}`,
-    "Content-Type": "application/json",
-    "X-GitHub-Api-Version": "2022-11-28",
-  });
-
-  const loginToGitHub = async () => {
-    const token = githubToken.trim();
-    if (!token) {
-      setGithubStatus({ kind: "error", message: "Enter a GitHub token first." });
-      return;
-    }
-
-    setGithubBusy(true);
-    setGithubStatus({ kind: "idle", message: "" });
-
-    try {
-      const res = await fetch("https://api.github.com/user", {
-        headers: githubHeaders(token),
-      });
-
-      if (!res.ok) {
-        throw new Error(res.status === 401 ? "GitHub rejected this token." : `GitHub login failed (${res.status}).`);
-      }
-
-      const user = await res.json() as GitHubUser;
-      setGithubUser(user);
-      setGithubStatus({ kind: "success", message: `Logged in as ${user.login}.`, url: user.html_url });
-    } catch (error: any) {
-      setGithubUser(null);
-      setGithubStatus({ kind: "error", message: error?.message ?? "Could not log in to GitHub." });
-    } finally {
-      setGithubBusy(false);
-    }
+  const runCustomGit = async () => {
+    const args = splitGitArgs(customGitArgs.trim());
+    if (args.length === 0) return;
+    await runGit(args);
   };
 
-  const logoutFromGitHub = () => {
-    setGithubToken("");
-    setGithubUser(null);
-    setGithubStatus({ kind: "idle", message: "" });
-  };
-
-  const createGitHubRepo = async () => {
+  const publishToGitHub = async () => {
     const name = repoName.trim();
-    if (!githubUser) {
-      setGithubStatus({ kind: "error", message: "Log in to GitHub before creating a repo." });
+    const token = gitSettings.githubToken.trim();
+
+    if (!gitSettings.githubUser || !token) {
+      setGithubStatus({ kind: "error", message: "Log in to GitHub in Settings first." });
       return;
     }
-
     if (!name) {
       setGithubStatus({ kind: "error", message: "Enter a repository name." });
+      return;
+    }
+    if (commits.length === 0) {
+      setGithubStatus({ kind: "error", message: "Make at least one commit before publishing." });
       return;
     }
 
@@ -148,35 +235,61 @@ export default function CodePanel({
     try {
       const res = await fetch("https://api.github.com/user/repos", {
         method: "POST",
-        headers: githubHeaders(),
+        headers: {
+          Accept: "application/vnd.github+json",
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+          "X-GitHub-Api-Version": "2022-11-28",
+        },
         body: JSON.stringify({
           name,
           description: repoDescription.trim() || undefined,
           private: repoPrivate,
-          auto_init: true,
+          auto_init: false,
         }),
       });
 
       const data = await res.json().catch(() => ({}));
-
       if (!res.ok) {
-        const message = typeof data?.message === "string" ? data.message : `Repo creation failed (${res.status}).`;
-        throw new Error(message);
+        const msg = typeof data?.message === "string" ? data.message : `GitHub API error (${res.status})`;
+        throw new Error(msg);
       }
 
-      setGithubStatus({
-        kind: "success",
-        message: `Created ${data.full_name ?? name}.`,
-        url: data.html_url,
-      });
-      setRepoName("");
-      setRepoDescription("");
+      await runGit(["remote", "remove", "origin"], false);
+      await runGit(["remote", "add", "origin", data.clone_url as string], false);
+      const push = await runGit(["push", "-u", "origin", currentBranch], false);
+      if (!push?.ok) throw new Error(push?.stderr || "Push failed.");
+
+      setGithubStatus({ kind: "success", message: `Published as ${data.full_name}`, url: data.html_url as string });
     } catch (error: any) {
-      setGithubStatus({ kind: "error", message: error?.message ?? "Could not create GitHub repo." });
+      setGithubStatus({ kind: "error", message: error?.message ?? "Could not publish to GitHub." });
     } finally {
       setGithubBusy(false);
     }
   };
+
+  useEffect(() => {
+    setRepoName(prev => prev || projectName);
+  }, [projectName]);
+
+  useEffect(() => {
+    setGitInitialized(gitRepositoryReady);
+  }, [gitRepositoryReady]);
+
+  useEffect(() => {
+    if (!gitInitialized || !window.electronAPI?.runGit) return;
+    setPendingRefresh(true);
+    const timeout = window.setTimeout(async () => {
+      await refreshGit(false, false);
+      setPendingRefresh(false);
+    }, 700);
+    return () => {
+      window.clearTimeout(timeout);
+      setPendingRefresh(false);
+    };
+  }, [filesSignature, gitInitialized]);
+
+  const hasChanges = gitChanges.length > 0;
 
   return (
     <div className={`code-panel${isOpen ? "" : " code-panel--collapsed"}`}>
@@ -198,7 +311,14 @@ export default function CodePanel({
                 role="tab"
                 aria-selected={activeTab === tab}
               >
-                {tab === "prompt" ? "Prompt + AI" : "Git"}
+                {tab === "prompt" ? "Prompt + AI" : (
+                  <>
+                    Git
+                    {hasChanges && (
+                      <span className="git-tab-badge">{changedFilesCount}</span>
+                    )}
+                  </>
+                )}
               </button>
             ))}
           </div>
@@ -243,118 +363,248 @@ export default function CodePanel({
 
       {isOpen && activeTab === "git" && (
         <div className="workspace-tool-body">
-          <div className="workspace-section-title">GitHub</div>
-          {githubUser ? (
-            <div className="github-account">
-              {githubUser.avatar_url && <img className="github-avatar" src={githubUser.avatar_url} alt="" />}
-              <div className="github-account-main">
-                <span className="github-account-name">{githubUser.login}</span>
-                {githubUser.html_url && (
-                  <a className="github-link" href={githubUser.html_url} target="_blank" rel="noreferrer">
-                    View profile
-                  </a>
-                )}
-              </div>
-              <button className="btn" onClick={logoutFromGitHub}>Logout</button>
-            </div>
-          ) : (
-            <div className="github-login-box">
-              <input
-                className="input"
-                value={githubToken}
-                onChange={(e) => setGithubToken(e.target.value)}
-                placeholder="GitHub token with repo scope"
-                type="password"
-              />
-              <button className="btn btn-primary" onClick={loginToGitHub} disabled={githubBusy}>
-                {githubBusy ? "Logging in..." : "Login"}
-              </button>
-            </div>
-          )}
 
-          <div className="github-repo-box">
-            <input
-              className="input"
-              value={repoName}
-              onChange={(e) => setRepoName(e.target.value)}
-              placeholder="Repository name"
-              disabled={!githubUser || githubBusy}
-            />
-            <input
-              className="input"
-              value={repoDescription}
-              onChange={(e) => setRepoDescription(e.target.value)}
-              placeholder="Description"
-              disabled={!githubUser || githubBusy}
-            />
-            <label className="github-private-toggle">
-              <input
-                type="checkbox"
-                checked={repoPrivate}
-                onChange={(e) => setRepoPrivate(e.target.checked)}
-                disabled={!githubUser || githubBusy}
-              />
-              Private repository
-            </label>
-            <button className="btn btn-primary workspace-wide-btn" onClick={createGitHubRepo} disabled={!githubUser || githubBusy}>
-              {githubBusy ? "Working..." : "Create GitHub Repo"}
+          {/* ── Header bar ── */}
+          <div className="git-header-bar">
+            <div className="git-header-branch">
+              <span className={`git-header-dot ${gitInitialized ? "git-header-dot--ready" : ""}`} />
+              <span className="git-header-branch-name">
+                {gitInitialized ? currentBranch : "No repository"}
+              </span>
+            </div>
+            <div className="git-header-meta">
+              {pendingRefresh && (
+                <span className="git-header-checking">Checking…</span>
+              )}
+              {!pendingRefresh && hasChanges && (
+                <span className="git-header-changes">
+                  {changedFilesCount} change{changedFilesCount !== 1 ? "s" : ""}
+                </span>
+              )}
+              {!pendingRefresh && gitInitialized && !hasChanges && (
+                <span className="git-header-clean">Clean</span>
+              )}
+            </div>
+            <button
+              className="btn git-header-refresh"
+              onClick={() => void refreshGit(true, true)}
+              disabled={gitBusy}
+              title="Refresh git status"
+            >
+              ↻
             </button>
           </div>
 
-          {githubStatus.message && (
-            <div className={`github-status github-status--${githubStatus.kind}`}>
-              <span>{githubStatus.message}</span>
-              {githubStatus.url && (
-                <a href={githubStatus.url} target="_blank" rel="noreferrer">
-                  Open
-                </a>
+          {/* ── Not initialized ── */}
+          {!gitInitialized && (
+            <div className="git-init-state">
+              <div className="git-init-icon">⎇</div>
+              <div className="git-init-title">No Git repository</div>
+              <div className="git-init-desc">Initialize a repository to start tracking this project.</div>
+              <button
+                className="btn btn-primary workspace-wide-btn"
+                onClick={() => void initRepo()}
+                disabled={gitBusy || files.length === 0}
+              >
+                {gitBusy ? "Initializing…" : "Initialize Git Repository"}
+              </button>
+              {files.length === 0 && (
+                <div className="git-init-hint">Generate project files first.</div>
               )}
             </div>
           )}
 
-          <div className="workspace-section-title">Branches</div>
-          <div className="git-branch-list">
-            {branches.map(branch => (
-              <button
-                key={branch.name}
-                className={`git-branch ${branch.name === currentBranch ? "active" : ""}`}
-                onClick={() => setCurrentBranch(branch.name)}
-              >
-                <span>{branch.name}</span>
-                <span>{branch.commitCount}</span>
-              </button>
-            ))}
-          </div>
-          <div className="workspace-row">
-            <input
-              className="input"
-              value={branchName}
-              onChange={(e) => setBranchName(e.target.value)}
-              placeholder="feature/project-ui"
-            />
-            <button className="btn" onClick={createBranch}>Branch</button>
-          </div>
+          {gitInitialized && (
+            <>
+              {/* ── Changed files ── */}
+              {(hasChanges || pendingRefresh) && (
+                <section className={`git-card git-changes-card${hasChanges ? " git-changes-card--active" : ""}`}>
+                  <div className="git-card-header">
+                    <div>
+                      <span>Changes</span>
+                      <small>
+                        {pendingRefresh && !hasChanges
+                          ? "Scanning project files…"
+                          : `${changedFilesCount} file${changedFilesCount !== 1 ? "s" : ""} not committed`}
+                      </small>
+                    </div>
+                  </div>
+                  <div className="git-change-list">
+                    {gitChanges.map(change => {
+                      const style = changeStyle(change.code);
+                      return (
+                        <div key={change.path} className="git-change-item">
+                          <span className={`git-change-badge git-change-badge--${style.cls}`}>
+                            {style.label}
+                          </span>
+                          <span className="git-change-path" title={change.path}>
+                            {change.path}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </section>
+              )}
 
-          <div className="workspace-section-title">Commits</div>
-          <textarea
-            className="workspace-commit-input"
-            value={commitMessage}
-            onChange={(e) => setCommitMessage(e.target.value)}
-            placeholder="Describe this snapshot"
-          />
-          <button className="btn btn-primary workspace-wide-btn" onClick={createCommit}>
-            Commit to {currentBranch}
-          </button>
-          <div className="git-commit-list">
-            {commits.length > 0 ? commits.map(commit => (
-              <div key={commit.id} className="git-commit">
-                <div className="git-commit-message">{commit.message}</div>
-                <div className="git-commit-meta">{commit.id} on {commit.branch} · {commit.createdAt}</div>
-              </div>
-            )) : (
-              <div className="workspace-empty">No commits yet.</div>
-            )}
-          </div>
+              {/* ── Commit ── */}
+              <section className="git-card">
+                <div className="git-card-header">
+                  <div>
+                    <span>Commit</span>
+                    <small>
+                      {hasChanges
+                        ? `Stage all & commit to ${currentBranch}`
+                        : "Working tree clean"}
+                    </small>
+                  </div>
+                </div>
+                {suggestedCommitMessage && (
+                  <div className="git-commit-suggestion">
+                    <div>
+                      <span>Suggested</span>
+                      <strong>{suggestedCommitMessage}</strong>
+                    </div>
+                    <button className="btn" onClick={() => setCommitMessage(suggestedCommitMessage)}>
+                      Use
+                    </button>
+                  </div>
+                )}
+                <textarea
+                  className="workspace-commit-input"
+                  value={commitMessage}
+                  onChange={(e) => setCommitMessage(e.target.value)}
+                  placeholder="Describe this snapshot…"
+                />
+                <button
+                  className="btn btn-primary workspace-wide-btn"
+                  onClick={() => void createCommit()}
+                  disabled={gitBusy || !commitMessage.trim() || files.length === 0}
+                >
+                  {gitBusy ? "Working…" : `Commit to ${currentBranch}`}
+                </button>
+              </section>
+
+              {/* ── Recent commits ── */}
+              {commits.length > 0 && (
+                <section className="git-card">
+                  <div className="git-card-header">
+                    <div>
+                      <span>History</span>
+                      <small>Last {commits.length} commit{commits.length !== 1 ? "s" : ""}</small>
+                    </div>
+                  </div>
+                  <div className="git-commit-list">
+                    {commits.map(commit => {
+                      const [hash, ...msgParts] = commit.split(" ");
+                      return (
+                        <div key={commit} className="git-commit">
+                          <div className="git-commit-message">{msgParts.join(" ") || commit}</div>
+                          <div className="git-commit-meta">{hash}</div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </section>
+              )}
+
+              {/* ── Publish to GitHub ── */}
+              <section className="git-card">
+                <div className="git-card-header">
+                  <div>
+                    <span>Publish to GitHub</span>
+                    <small>Create a remote repo and push in one step</small>
+                  </div>
+                  {gitSettings.githubUser && (
+                    <div className="git-github-account">
+                      {gitSettings.githubUser.avatar_url && (
+                        <img className="github-avatar" src={gitSettings.githubUser.avatar_url} alt="" />
+                      )}
+                      <span>{gitSettings.githubUser.login}</span>
+                    </div>
+                  )}
+                </div>
+
+                {!gitSettings.githubUser ? (
+                  <div className="workspace-empty">Log in to GitHub in Settings to publish.</div>
+                ) : (
+                  <>
+                    <input
+                      className="input"
+                      value={repoName}
+                      onChange={(e) => setRepoName(e.target.value)}
+                      placeholder="Repository name"
+                      disabled={githubBusy}
+                    />
+                    <input
+                      className="input"
+                      value={repoDescription}
+                      onChange={(e) => setRepoDescription(e.target.value)}
+                      placeholder="Description (optional)"
+                      disabled={githubBusy}
+                    />
+                    <label className="github-private-toggle">
+                      <input
+                        type="checkbox"
+                        checked={repoPrivate}
+                        onChange={(e) => setRepoPrivate(e.target.checked)}
+                        disabled={githubBusy}
+                      />
+                      Private repository
+                    </label>
+                    <button
+                      className="btn btn-primary workspace-wide-btn"
+                      onClick={() => void publishToGitHub()}
+                      disabled={githubBusy || !repoName.trim() || commits.length === 0}
+                    >
+                      {githubBusy ? "Publishing…" : "Create Repo & Push"}
+                    </button>
+                    {commits.length === 0 && (
+                      <div className="git-publish-hint">Commit your changes first before publishing.</div>
+                    )}
+                  </>
+                )}
+
+                {githubStatus.message && (
+                  <div className={`github-status github-status--${githubStatus.kind}`}>
+                    <span>{githubStatus.message}</span>
+                    {githubStatus.url && (
+                      <a href={githubStatus.url} target="_blank" rel="noreferrer">Open on GitHub</a>
+                    )}
+                  </div>
+                )}
+              </section>
+
+              {/* ── Terminal ── */}
+              <section className="git-card git-card--wide">
+                <div className="git-card-header">
+                  <div>
+                    <span>Terminal</span>
+                    <small>Run any git command — arguments only</small>
+                  </div>
+                </div>
+                <div className="workspace-row">
+                  <input
+                    className="input"
+                    value={customGitArgs}
+                    onChange={(e) => setCustomGitArgs(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && void runCustomGit()}
+                    placeholder="log --oneline, remote -v, diff HEAD~1"
+                  />
+                  <button
+                    className="btn"
+                    onClick={() => void runCustomGit()}
+                    disabled={gitBusy || !customGitArgs.trim()}
+                  >
+                    Run
+                  </button>
+                </div>
+                {gitOutput && (
+                  <pre className="git-output">{gitOutput}</pre>
+                )}
+              </section>
+            </>
+          )}
         </div>
       )}
     </div>

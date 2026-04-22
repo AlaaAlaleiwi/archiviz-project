@@ -1,5 +1,6 @@
 import Editor from "@monaco-editor/react";
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
+import type { EditorSettings } from "./Settings";
 import "../styles.css";
 
 export type WorkspaceFile = {
@@ -20,6 +21,8 @@ type FileWorkspaceProps = {
   onActivePathChange: (path: string | null) => void;
   onFilesChange: (files: WorkspaceFile[]) => void;
   editorTheme: "dark" | "light";
+  editorSettings: EditorSettings;
+  showGitFolder?: boolean;
   onBuildProject?: () => void;
   onRunProject?: () => void;
   runnerBusy?: boolean;
@@ -83,7 +86,11 @@ function getParentFolders(path: string) {
 }
 
 function isFolderPlaceholder(path: string) {
-  return basename(path) === ".gitkeep";
+  return basename(path) === ".gitkeep" || path === ".git/.archiviz";
+}
+
+function isGitFolderPath(path: string) {
+  return path === ".git";
 }
 
 function normalizeWorkspacePath(path: string) {
@@ -247,7 +254,7 @@ function FileTree({
         return (
           <div key={child.path}>
             <button
-              className={`file-tree-item ${isActive ? "active" : ""} ${isFile ? "file-tree-item--file" : "file-tree-item--folder"}`}
+              className={`file-tree-item ${isActive ? "active" : ""} ${isFile ? "file-tree-item--file" : "file-tree-item--folder"} ${isGitFolderPath(child.path) ? "file-tree-item--git" : ""}`}
               style={{ paddingLeft: 10 + depth * 14 }}
               onClick={() => isFile ? onSelect(child.path) : onToggleFolder(child.path)}
               onContextMenu={(event) => {
@@ -257,11 +264,11 @@ function FileTree({
               title={child.path}
             >
               <span className={`file-tree-caret ${isFile ? "file-tree-caret--blank" : isCollapsed ? "" : "open"}`} />
-              <span className={`file-tree-icon ${isFile ? "file-tree-icon--file" : "file-tree-icon--folder"}`}>
+              <span className={`file-tree-icon ${isFile ? "file-tree-icon--file" : isGitFolderPath(child.path) ? "file-tree-icon--git" : "file-tree-icon--folder"}`}>
                 {isFile ? <span>{getFileExtension(child.path)}</span> : null}
               </span>
               <span className="file-tree-label">{child.name}</span>
-              {!isFile && <span className="file-tree-count">{countFiles(child)}</span>}
+              {!isFile && <span className="file-tree-count">{isGitFolderPath(child.path) ? "repo" : countFiles(child)}</span>}
             </button>
             {!isFile && !isCollapsed && (
               <FileTree
@@ -288,6 +295,8 @@ export default function FileWorkspace({
   onActivePathChange,
   onFilesChange,
   editorTheme,
+  editorSettings,
+  showGitFolder = false,
   onBuildProject,
   onRunProject,
   runnerBusy = false,
@@ -305,7 +314,17 @@ export default function FileWorkspace({
   const activeFileRef = useRef<WorkspaceFile | null>(null);
   const visibleFilesRef = useRef<WorkspaceFile[]>([]);
 
-  const fileTree = useMemo(() => buildFileTree(files), [files]);
+  const treeFiles = useMemo(() => {
+    if (!showGitFolder || files.some(file => file.path === ".git/.archiviz" || file.path.startsWith(".git/"))) {
+      return files;
+    }
+    return [{ path: ".git/.archiviz", content: "" }, ...files];
+  }, [files, showGitFolder]);
+  const fileTree = useMemo(() => buildFileTree(treeFiles), [treeFiles]);
+  const hasTreeMatches = useMemo(() => {
+    const query = fileSearch.trim().toLowerCase();
+    return Array.from(fileTree.children.values()).some(child => childTreeMatches(child, query));
+  }, [fileSearch, fileTree]);
   const visibleFiles = useMemo(() => files.filter(file => !isFolderPlaceholder(file.path)), [files]);
   const activeFile = visibleFiles.find(file => file.path === activePath) ?? visibleFiles[0] ?? null;
   const activeFileLines = activeFile?.content ? activeFile.content.split(/\r?\n/).length : 0;
@@ -600,8 +619,8 @@ export default function FileWorkspace({
           placeholder="Find files by path"
         />
         <div className="file-tree-scroll" onContextMenu={(event) => openContextMenu(event)}>
-          {files.length > 0 ? (
-            filteredFileCount > 0 ? (
+          {treeFiles.length > 0 ? (
+            hasTreeMatches ? (
               <FileTree
                 node={fileTree}
                 activePath={activeFile?.path ?? null}
@@ -697,12 +716,19 @@ export default function FileWorkspace({
                 onChange={(value) => updateActiveFile(value ?? "")}
                 options={{
                   automaticLayout: true,
-                  fontSize: 13,
-                  lineHeight: 21,
-                  minimap: { enabled: false },
+                  fontFamily: editorSettings.fontFamily,
+                  fontSize: editorSettings.fontSize,
+                  lineHeight: editorSettings.lineHeight,
+                  minimap: { enabled: editorSettings.minimap },
                   scrollBeyondLastLine: false,
-                  tabSize: 2,
-                  wordWrap: "off",
+                  tabSize: editorSettings.tabSize,
+                  wordWrap: editorSettings.wordWrap,
+                  lineNumbers: editorSettings.lineNumbers,
+                  renderWhitespace: editorSettings.renderWhitespace,
+                  formatOnPaste: editorSettings.formatOnPaste,
+                  formatOnType: editorSettings.formatOnType,
+                  smoothScrolling: editorSettings.smoothScrolling,
+                  cursorStyle: editorSettings.cursorStyle,
                 }}
               />
             </div>

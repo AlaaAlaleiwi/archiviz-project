@@ -2,12 +2,28 @@ import type { JavaVersion, SpringBootVersion, BuildTool } from "../types";
 
 export type ScaffoldFile = { path: string; content: string };
 
+export type DockerScaffoldOptions = {
+  enabled: boolean;
+  composeEnabled: boolean;
+  includePostgres: boolean;
+  includeRedis: boolean;
+  imageName: string;
+  imageTag: string;
+  appPort: number;
+  containerPort: number;
+  postgresPort: number;
+  redisPort: number;
+  maxRamPercentage: number;
+  healthcheckEnabled: boolean;
+};
+
 interface ScaffoldOptions {
   projectName: string;
   javaVersion: JavaVersion;
   springBootVersion: SpringBootVersion;
   buildTool: BuildTool;
   generatedFiles: ScaffoldFile[];
+  docker?: DockerScaffoldOptions;
 }
 
 const SPRING_BOOT_PATCH: Record<SpringBootVersion, string> = {
@@ -18,12 +34,26 @@ const SPRING_BOOT_PATCH: Record<SpringBootVersion, string> = {
 
 const DEPENDENCY_MGMT_VERSION = "1.1.7";
 
+const DEFAULT_DOCKER: DockerScaffoldOptions = {
+  enabled: true,
+  composeEnabled: true,
+  includePostgres: true,
+  includeRedis: true,
+  imageName: "",
+  imageTag: "latest",
+  appPort: 8080,
+  containerPort: 8080,
+  postgresPort: 5432,
+  redisPort: 6379,
+  maxRamPercentage: 75,
+  healthcheckEnabled: true,
+};
+
 export class ProjectScaffoldService {
   generate(opts: ScaffoldOptions): ScaffoldFile[] {
+    const docker = { ...DEFAULT_DOCKER, ...opts.docker };
     const files: ScaffoldFile[] = [
       ...this.javaScaffold(opts),
-      this.dockerfile(opts),
-      this.dockerCompose(opts),
       ...this.terraform(opts),
       this.gitignore(),
       this.readme(opts),
@@ -31,6 +61,15 @@ export class ProjectScaffoldService {
       this.vscodeSettings(),
       this.vscodeExtensions(),
     ];
+
+    if (docker.enabled) {
+      files.push(this.dockerfile({ ...opts, docker }));
+      files.push(this.dockerignore());
+      if (docker.composeEnabled) {
+        files.push(this.dockerCompose({ ...opts, docker }));
+      }
+    }
+
     return files;
   }
 
@@ -48,10 +87,6 @@ export class ProjectScaffoldService {
       files.push({
         path: ".mvn/wrapper/maven-wrapper.properties",
         content: "distributionUrl=https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/3.9.9/apache-maven-3.9.9-bin.zip\n",
-      });
-      files.push({
-        path: "mvnw",
-        content: `#!/bin/sh\nexec "$(dirname "$0")/.mvn/wrapper/MavenWrapperMain.sh" "$@"\n`,
       });
     } else {
       files.push({ path: "build.gradle.kts", content: this.buildGradleKts(groupId, artifactId, javaVersion, springVersion) });
@@ -432,21 +467,29 @@ PORT=8080
 
   private dockerfile(opts: ScaffoldOptions): ScaffoldFile {
     const { javaVersion, buildTool } = opts;
+    const docker = { ...DEFAULT_DOCKER, ...opts.docker };
     const buildCmd = buildTool === "maven"
-      ? "RUN ./mvnw package -DskipTests -q"
+      ? "RUN mvn package -DskipTests -q"
       : "RUN ./gradlew build -x test -q";
     const copyCmd = buildTool === "maven"
-      ? "COPY .mvn/ .mvn/\nCOPY mvnw pom.xml ./"
+      ? "COPY pom.xml ./"
       : "COPY gradle/ gradle/\nCOPY gradlew build.gradle.kts settings.gradle.kts ./";
+
+    const healthcheck = docker.healthcheckEnabled
+      ? `
+HEALTHCHECK --interval=30s --timeout=3s --start-period=60s \\
+  CMD wget -qO- http://localhost:${docker.containerPort}/actuator/health || exit 1
+`
+      : "";
 
     return {
       path: "Dockerfile",
       content: `# ── Build stage ──────────────────────────────────────────────────────────────
-FROM eclipse-temurin:${javaVersion}-jdk-alpine AS build
+FROM ${buildTool === "maven" ? `maven:3.9-eclipse-temurin-${javaVersion}-alpine` : `eclipse-temurin:${javaVersion}-jdk-alpine`} AS build
 WORKDIR /app
 
 ${copyCmd}
-RUN ${buildTool === "maven" ? "./mvnw dependency:resolve -q" : "./gradlew dependencies -q"} || true
+RUN ${buildTool === "maven" ? "mvn dependency:resolve -q" : "./gradlew dependencies -q"} || true
 
 COPY src ./src
 ${buildCmd}
@@ -460,42 +503,53 @@ USER spring:spring
 
 COPY --from=build /app/${buildTool === "maven" ? "target" : "build/libs"}/*.jar app.jar
 
-EXPOSE 8080
+EXPOSE ${docker.containerPort}
+${healthcheck}
+ENTRYPOINT ["java", "-XX:+UseContainerSupport", "-XX:MaxRAMPercentage=${docker.maxRamPercentage}.0", "-jar", "app.jar"]
+`,
+    };
+  }
 
-HEALTHCHECK --interval=30s --timeout=3s --start-period=60s \\
-  CMD wget -qO- http://localhost:8080/actuator/health || exit 1
-
-ENTRYPOINT ["java", "-XX:+UseContainerSupport", "-XX:MaxRAMPercentage=75.0", "-jar", "app.jar"]
+  private dockerignore(): ScaffoldFile {
+    return {
+      path: ".dockerignore",
+      content: `.git
+.idea
+.vscode
+node_modules
+dist
+build
+target
+*.log
+.env
+.env.*
+!.env.example
+terraform/.terraform
+terraform/*.tfstate*
 `,
     };
   }
 
   private dockerCompose(opts: ScaffoldOptions): ScaffoldFile {
     const { projectName } = opts;
+    const docker = { ...DEFAULT_DOCKER, ...opts.docker };
     const name = projectName.replace(/[^a-z0-9]/gi, "").toLowerCase() || "app";
-
-    return {
-      path: "docker-compose.yml",
-      content: `version: '3.9'
-
-services:
-  app:
-    build: .
-    image: ${name}:latest
-    ports:
-      - "\${PORT:-8080}:8080"
-    environment:
-      SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/${name}
-      SPRING_DATASOURCE_USERNAME: postgres
-      SPRING_DATASOURCE_PASSWORD: \${DB_PASSWORD:-postgres}
-      JWT_SECRET: \${JWT_SECRET:-change-in-production}
-    depends_on:
+    const imageName = (docker.imageName || name).replace(/[^a-z0-9._/-]/gi, "").toLowerCase() || name;
+    const imageTag = docker.imageTag.trim() || "latest";
+    const dependsOn = docker.includePostgres
+      ? `    depends_on:
       db:
         condition: service_healthy
-    restart: unless-stopped
-    networks:
-      - backend
-
+`
+      : "";
+    const datasourceEnv = docker.includePostgres
+      ? `      SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/${name}
+      SPRING_DATASOURCE_USERNAME: postgres
+      SPRING_DATASOURCE_PASSWORD: \${DB_PASSWORD:-postgres}
+`
+      : "";
+    const postgresService = docker.includePostgres
+      ? `
   db:
     image: postgres:16-alpine
     environment:
@@ -503,7 +557,7 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: \${DB_PASSWORD:-postgres}
     ports:
-      - "5432:5432"
+      - "${docker.postgresPort}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -513,20 +567,45 @@ services:
       retries: 10
     networks:
       - backend
-
+`
+      : "";
+    const redisService = docker.includeRedis
+      ? `
   redis:
     image: redis:7-alpine
     ports:
-      - "6379:6379"
+      - "${docker.redisPort}:6379"
     command: redis-server --save 60 1 --loglevel warning
     volumes:
       - redis_data:/data
     networks:
       - backend
+`
+      : "";
+    const volumes = [
+      docker.includePostgres ? "  postgres_data:" : "",
+      docker.includeRedis ? "  redis_data:" : "",
+    ].filter(Boolean).join("\n");
 
-volumes:
-  postgres_data:
-  redis_data:
+    return {
+      path: "docker-compose.yml",
+      content: `version: '3.9'
+
+services:
+  app:
+    build: .
+    image: ${imageName}:${imageTag}
+    ports:
+      - "\${PORT:-${docker.appPort}}:${docker.containerPort}"
+    environment:
+      PORT: ${docker.containerPort}
+${datasourceEnv}      JAVA_OPTS: "-XX:+UseContainerSupport -XX:MaxRAMPercentage=${docker.maxRamPercentage}.0"
+      JWT_SECRET: \${JWT_SECRET:-change-in-production}
+${dependsOn}    restart: unless-stopped
+    networks:
+      - backend
+${postgresService}${redisService}
+${volumes ? `volumes:\n${volumes}\n` : ""}
 
 networks:
   backend:
@@ -873,9 +952,9 @@ terraform/.terraform.lock.hcl
 
   private readme(opts: ScaffoldOptions): ScaffoldFile {
     const { projectName, javaVersion, springBootVersion, buildTool } = opts;
-    const runCmd = buildTool === "maven" ? "./mvnw spring-boot:run" : "./gradlew bootRun";
-    const testCmd = buildTool === "maven" ? "./mvnw test" : "./gradlew test";
-    const buildCmd = buildTool === "maven" ? "./mvnw package" : "./gradlew build";
+    const runCmd = buildTool === "maven" ? "mvn spring-boot:run" : "./gradlew bootRun";
+    const testCmd = buildTool === "maven" ? "mvn test" : "./gradlew test";
+    const buildCmd = buildTool === "maven" ? "mvn package" : "./gradlew build";
 
     return {
       path: "README.md",
@@ -887,7 +966,7 @@ terraform/.terraform.lock.hcl
 
 - Java ${javaVersion}+
 - Docker & Docker Compose (for local development)
-- ${buildTool === "maven" ? "Maven 3.9+ (or use included `./mvnw`)" : "Gradle 8+ (or use included `./gradlew`)"}
+- ${buildTool === "maven" ? "Maven 3.9+" : "Gradle 8+ (or use included `./gradlew`)"}
 
 ## Quick Start
 

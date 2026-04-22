@@ -13,6 +13,20 @@ export type JavaProjectConfig = {
   buildTool:         BuildTool;
 };
 
+export type RepositoryGitOperation =
+  | "init"
+  | "status"
+  | "fetch"
+  | "set-origin"
+  | "pull"
+  | "push"
+  | "rebase"
+  | "merge"
+  | "stash"
+  | "stash-pop"
+  | "abort-rebase"
+  | "abort-merge";
+
 /* ─────────────────────────────────────────
    DROPDOWN MENU
 ───────────────────────────────────────── */
@@ -206,8 +220,6 @@ interface TopbarProps {
   canSaveProject: boolean;
   hasUnsavedChanges?: boolean;
   importingProject?: boolean;
-  theme: "dark" | "light";
-  setTheme: (t: "dark" | "light") => void;
   javaVersion: JavaVersion;
   setJavaVersion: (v: JavaVersion) => void;
   springBootVersion: SpringBootVersion;
@@ -222,6 +234,17 @@ interface TopbarProps {
   onImportProject: () => void;
   onSaveProject: () => void;
   onExportProject: () => void;
+  gitRepositoryReady?: boolean;
+  gitBusy?: boolean;
+  gitOperation?: RepositoryGitOperation;
+  setGitOperation?: (operation: RepositoryGitOperation) => void;
+  gitRemoteUrl?: string;
+  setGitRemoteUrl?: (url: string) => void;
+  gitCurrentBranch?: string;
+  gitTargetBranch?: string;
+  setGitTargetBranch?: (branch: string) => void;
+  gitBranches?: string[];
+  onRunGitOperation?: () => void;
   onLogout?: () => void;
 }
 
@@ -229,7 +252,6 @@ export default function Topbar({
   generate,
   canGenerate, canSaveProject,
   hasUnsavedChanges, importingProject,
-  theme, setTheme,
   javaVersion, setJavaVersion,
   springBootVersion, setSpringBootVersion,
   projectName, setProjectName,
@@ -237,6 +259,17 @@ export default function Topbar({
   onOpenSettings,
   onCreateProject, onOpenProject, onImportProject,
   onSaveProject, onExportProject,
+  gitRepositoryReady = false,
+  gitBusy = false,
+  gitOperation = "init",
+  setGitOperation,
+  gitRemoteUrl = "",
+  setGitRemoteUrl,
+  gitCurrentBranch = "main",
+  gitTargetBranch = "main",
+  setGitTargetBranch,
+  gitBranches = [],
+  onRunGitOperation,
   onLogout,
 }: TopbarProps) {
   type Step = "idle" | "unsaved" | "newProject" | "editProject";
@@ -267,6 +300,14 @@ export default function Topbar({
     setProjectName(cfg.projectName);
     setStep("idle");
   };
+
+  const branchOptions = gitBranches.length > 0 ? gitBranches : [gitCurrentBranch || "main"];
+  const selectedBranchOptions = branchOptions.includes(gitTargetBranch) || !gitTargetBranch
+    ? branchOptions
+    : [gitTargetBranch, ...branchOptions];
+  const gitNeedsRepository = gitOperation !== "init" && gitOperation !== "status";
+  const gitNeedsRemote = gitOperation === "set-origin" && !gitRemoteUrl.trim();
+  const gitRunDisabled = gitBusy || (gitNeedsRepository && !gitRepositoryReady) || gitNeedsRemote;
 
   return (
     <>
@@ -327,18 +368,68 @@ export default function Topbar({
 
         {/* ── RIGHT ────────────────────────────────────────────────── */}
         <div className="topbar-right">
+          {onRunGitOperation && (
+            <div className="topbar-repository">
+              <div className="topbar-repo-status">
+                <span className={`topbar-repo-dot ${gitRepositoryReady ? "ready" : ""}`} />
+                <span className="topbar-repo-name">{projectName || "untitled"}</span>
+                {gitRepositoryReady && (
+                  <>
+                    <span className="topbar-repo-sep">/</span>
+                    <span className="topbar-repo-branch">{gitCurrentBranch}</span>
+                  </>
+                )}
+              </div>
+              <select
+                className="topbar-git-select"
+                value={gitOperation}
+                onChange={(event) => setGitOperation?.(event.target.value as RepositoryGitOperation)}
+                title="Repository operation"
+              >
+                <option value="init">Init</option>
+                <option value="status">Status</option>
+                <option value="fetch">Fetch</option>
+                <option value="set-origin">Set origin</option>
+                <option value="pull">Pull</option>
+                <option value="push">Push</option>
+                <option value="rebase">Rebase</option>
+                <option value="merge">Merge</option>
+                <option value="stash">Stash</option>
+                <option value="stash-pop">Pop stash</option>
+                <option value="abort-rebase">Abort rebase</option>
+                <option value="abort-merge">Abort merge</option>
+              </select>
+              <select
+                className="topbar-git-select topbar-git-select--branch"
+                value={gitTargetBranch}
+                onChange={(event) => setGitTargetBranch?.(event.target.value)}
+                disabled={!gitRepositoryReady}
+                title="Target branch"
+              >
+                {selectedBranchOptions.map(branch => (
+                  <option key={branch} value={branch}>{branch}</option>
+                ))}
+              </select>
+              {gitOperation === "set-origin" && (
+                <input
+                  className="topbar-git-remote"
+                  value={gitRemoteUrl}
+                  onChange={(event) => setGitRemoteUrl?.(event.target.value)}
+                  placeholder="origin URL"
+                />
+              )}
+              <button className="btn topbar-git-run" onClick={onRunGitOperation} disabled={gitRunDisabled}>
+                {gitBusy ? "Git..." : "Run"}
+              </button>
+            </div>
+          )}
+
           <button className="btn" onClick={generate} disabled={!canGenerate}>
             Generate Prompt
           </button>
 
-          <button className="btn" onClick={onOpenSettings} title="Settings">Settings</button>
-
-          <button
-            className="btn topbar-theme-toggle"
-            onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
-            title="Toggle theme"
-          >
-            {theme === "dark" ? "Light Mode" : "Dark Mode"}
+          <button className="btn topbar-icon-btn" onClick={onOpenSettings} title="Settings" aria-label="Settings">
+            ⚙
           </button>
 
           {onLogout && <button className="btn" onClick={onLogout}>Logout</button>}

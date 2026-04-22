@@ -30,6 +30,18 @@ contextBridge.exposeInMainWorld("electronAPI", {
   materializeWorkspace: (options) =>
     ipcRenderer.invoke("workspace:materialize", options),
 
+  runGit: (options) =>
+    ipcRenderer.invoke("git:run", options),
+
+  openProjectFile: () =>
+    ipcRenderer.invoke("project:open-file"),
+
+  readProjectFile: (filePath) =>
+    ipcRenderer.invoke("project:read-file", filePath),
+
+  sendApiRequest: (request) =>
+    ipcRenderer.invoke("api:request", request),
+
   onTerminalData: (callback) => {
     const listener = (_event, payload) => callback(payload);
     ipcRenderer.on("terminal:data", listener);

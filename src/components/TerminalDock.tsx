@@ -3,6 +3,7 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import "../styles.css";
+import type { TerminalSettings } from "./Settings";
 
 type TerminalTab = {
   id: string;
@@ -45,7 +46,11 @@ const terminalTheme = {
   brightWhite: "#fffdf8",
 };
 
-export default function TerminalDock() {
+type TerminalDockProps = {
+  terminalSettings?: TerminalSettings;
+};
+
+export default function TerminalDock({ terminalSettings }: TerminalDockProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [tabs, setTabs] = useState<TerminalTab[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -94,7 +99,12 @@ export default function TerminalDock() {
 
     let created;
     try {
-      created = await window.electronAPI.createTerminal({ cols: 100, rows: 28, cwd: options.cwd });
+      created = await window.electronAPI.createTerminal({
+        cols: 100,
+        rows: 28,
+        cwd: options.cwd,
+        shell: terminalSettings?.shell || undefined,
+      });
     } catch (err: any) {
       setIsOpen(true);
       setError(err?.message ?? "Could not create terminal.");
@@ -102,11 +112,11 @@ export default function TerminalDock() {
     }
 
     const terminal = new Terminal({
-      cursorBlink: true,
-      cursorStyle: "bar",
+      cursorBlink: terminalSettings?.cursorBlink ?? true,
+      cursorStyle: terminalSettings?.cursorStyle ?? "bar",
       convertEol: true,
-      fontFamily: '"JetBrains Mono", "SF Mono", SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace',
-      fontSize: 13,
+      fontFamily: terminalSettings?.fontFamily ?? '"JetBrains Mono", "SF Mono", SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace',
+      fontSize: terminalSettings?.fontSize ?? 13,
       fontWeight: 500,
       fontWeightBold: 700,
       lineHeight: 1.38,
@@ -197,6 +207,17 @@ export default function TerminalDock() {
     window.addEventListener("resize", handleResize);
     return () => window.removeEventListener("resize", handleResize);
   }, [activeId, fitTerminal]);
+
+  useEffect(() => {
+    if (!terminalSettings) return;
+    for (const { terminal, fitAddon } of terminalsRef.current.values()) {
+      terminal.options.fontSize = terminalSettings.fontSize;
+      terminal.options.fontFamily = terminalSettings.fontFamily;
+      terminal.options.cursorStyle = terminalSettings.cursorStyle;
+      terminal.options.cursorBlink = terminalSettings.cursorBlink;
+      fitAddon.fit();
+    }
+  }, [terminalSettings]);
 
   useEffect(() => {
     return () => {
