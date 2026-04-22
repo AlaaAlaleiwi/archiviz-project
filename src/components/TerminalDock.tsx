@@ -1,4 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
@@ -21,6 +23,27 @@ type TerminalCommandOptions = {
   cwd?: string;
   title?: string;
   command?: string;
+};
+
+type TerminalCreateResult = {
+  id: string;
+  shell: string;
+  cwd: string;
+};
+
+type TerminalDataPayload = {
+  id: string;
+  data: string;
+};
+
+type TerminalExitPayload = {
+  id: string;
+  exitCode?: number | null;
+};
+
+type TerminalDockProps = {
+  terminalSettings?: TerminalSettings;
+  getWorkspaceCwd?: () => Promise<string>;
 };
 
 const terminalTheme = {
@@ -46,15 +69,21 @@ const terminalTheme = {
   brightWhite: "#fffdf8",
 };
 
-type TerminalDockProps = {
-  terminalSettings?: TerminalSettings;
+const TERMINAL_DOCK_HEIGHT_KEY = "archiviz_terminal_dock_height";
+
+const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
+
+const loadTerminalHeight = () => {
+  const value = Number(localStorage.getItem(TERMINAL_DOCK_HEIGHT_KEY));
+  return Number.isFinite(value) ? clamp(value, 180, 520) : 320;
 };
 
-export default function TerminalDock({ terminalSettings }: TerminalDockProps) {
+export default function TerminalDock({ terminalSettings, getWorkspaceCwd }: TerminalDockProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [tabs, setTabs] = useState<TerminalTab[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [error, setError] = useState("");
+  const [dockHeight, setDockHeight] = useState(loadTerminalHeight);
   const terminalsRef = useRef(new Map<string, TerminalRuntime>());
   const containersRef = useRef(new Map<string, HTMLDivElement>());
 
@@ -64,7 +93,11 @@ export default function TerminalDock({ terminalSettings }: TerminalDockProps) {
 
     requestAnimationFrame(() => {
       runtime.fitAddon.fit();
-      window.electronAPI?.resizeTerminal?.(id, runtime.terminal.cols, runtime.terminal.rows);
+      void invoke("terminal_resize", {
+        id,
+        cols: runtime.terminal.cols,
+        rows: runtime.terminal.rows,
+      }).catch(() => undefined);
     });
   }, []);
 
@@ -89,27 +122,7 @@ export default function TerminalDock({ terminalSettings }: TerminalDockProps) {
   }, [openTerminalDom]);
 
   const createTab = useCallback(async (options: TerminalCommandOptions = {}) => {
-    if (!window.electronAPI?.createTerminal) {
-      setIsOpen(true);
-      setError("Real terminal support is available in Electron. Run the desktop app to start shell sessions.");
-      return;
-    }
-
     setError("");
-
-    let created;
-    try {
-      created = await window.electronAPI.createTerminal({
-        cols: 100,
-        rows: 28,
-        cwd: options.cwd,
-        shell: terminalSettings?.shell || undefined,
-      });
-    } catch (err: any) {
-      setIsOpen(true);
-      setError(err?.message ?? "Could not create terminal.");
-      return;
-    }
 
     const terminal = new Terminal({
       cursorBlink: terminalSettings?.cursorBlink ?? true,
@@ -127,8 +140,34 @@ export default function TerminalDock({ terminalSettings }: TerminalDockProps) {
     });
     const fitAddon = new FitAddon();
     terminal.loadAddon(fitAddon);
-    terminal.onData((data) => window.electronAPI?.writeTerminal?.(created.id, data));
-    terminal.onResize(({ cols, rows }) => window.electronAPI?.resizeTerminal?.(created.id, cols, rows));
+
+    let created: TerminalCreateResult;
+    try {
+      const cwd = options.cwd ?? await getWorkspaceCwd?.();
+      created = await invoke<TerminalCreateResult>("terminal_create", {
+        options: {
+          cols: 100,
+          rows: 28,
+          cwd,
+          shell: terminalSettings?.shell || undefined,
+        },
+      });
+    } catch (err) {
+      terminal.dispose();
+      setIsOpen(true);
+      setError(typeof err === "string" ? err : "Could not create terminal.");
+      return;
+    }
+
+    terminal.onData((data) => {
+      void invoke("terminal_write", { id: created.id, data }).catch((err) => {
+        setError(typeof err === "string" ? err : "Could not write to terminal.");
+      });
+    });
+    terminal.onResize(({ cols, rows }) => {
+      void invoke("terminal_resize", { id: created.id, cols, rows }).catch(() => undefined);
+    });
+
     terminalsRef.current.set(created.id, { terminal, fitAddon, opened: false });
 
     setTabs(prev => [...prev, {
@@ -142,13 +181,13 @@ export default function TerminalDock({ terminalSettings }: TerminalDockProps) {
     if (options.command) {
       window.setTimeout(() => {
         terminal.writeln(`$ ${options.command}`);
-        window.electronAPI?.writeTerminal?.(created.id, `${options.command}\r`);
+        void invoke("terminal_write", { id: created.id, data: `${options.command}\r` });
       }, 80);
     }
-  }, []);
+  }, [getWorkspaceCwd, terminalSettings]);
 
   const closeTab = useCallback((id: string) => {
-    window.electronAPI?.killTerminal?.(id);
+    void invoke("terminal_kill", { id }).catch(() => undefined);
     terminalsRef.current.get(id)?.terminal.dispose();
     terminalsRef.current.delete(id);
     containersRef.current.delete(id);
@@ -187,16 +226,21 @@ export default function TerminalDock({ terminalSettings }: TerminalDockProps) {
   }, [activeId, fitTerminal, isOpen, openTerminalDom]);
 
   useEffect(() => {
-    const offData = window.electronAPI?.onTerminalData?.(({ id, data }) => {
-      terminalsRef.current.get(id)?.terminal.write(data);
-    });
-    const offExit = window.electronAPI?.onTerminalExit?.(({ id, exitCode }) => {
-      terminalsRef.current.get(id)?.terminal.writeln(`\r\n[process exited: ${exitCode}]`);
-    });
+    const unlisteners: UnlistenFn[] = [];
+
+    void listen<TerminalDataPayload>("terminal-data", (event) => {
+      terminalsRef.current.get(event.payload.id)?.terminal.write(event.payload.data);
+    }).then(unlisten => unlisteners.push(unlisten));
+
+    void listen<TerminalExitPayload>("terminal-exit", (event) => {
+      const exitCode = event.payload.exitCode;
+      terminalsRef.current.get(event.payload.id)?.terminal.writeln(
+        `\r\n[process exited${typeof exitCode === "number" ? `: ${exitCode}` : ""}]`
+      );
+    }).then(unlisten => unlisteners.push(unlisten));
 
     return () => {
-      offData?.();
-      offExit?.();
+      for (const unlisten of unlisteners) unlisten();
     };
   }, []);
 
@@ -207,6 +251,30 @@ export default function TerminalDock({ terminalSettings }: TerminalDockProps) {
     window.addEventListener("resize", handleResize);
     return () => window.removeEventListener("resize", handleResize);
   }, [activeId, fitTerminal]);
+
+  useEffect(() => {
+    localStorage.setItem(TERMINAL_DOCK_HEIGHT_KEY, String(dockHeight));
+    if (activeId) fitTerminal(activeId);
+  }, [activeId, dockHeight, fitTerminal]);
+
+  const startDockResize = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const startY = event.clientY;
+    const startHeight = dockHeight;
+    document.body.classList.add("resizing-panel", "resizing-panel--y");
+
+    const onMove = (moveEvent: globalThis.PointerEvent) => {
+      setDockHeight(clamp(startHeight + startY - moveEvent.clientY, 180, 520));
+    };
+    const onUp = () => {
+      document.body.classList.remove("resizing-panel", "resizing-panel--y");
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  }, [dockHeight]);
 
   useEffect(() => {
     if (!terminalSettings) return;
@@ -222,7 +290,7 @@ export default function TerminalDock({ terminalSettings }: TerminalDockProps) {
   useEffect(() => {
     return () => {
       for (const id of terminalsRef.current.keys()) {
-        window.electronAPI?.killTerminal?.(id);
+        void invoke("terminal_kill", { id }).catch(() => undefined);
       }
     };
   }, []);
@@ -236,7 +304,15 @@ export default function TerminalDock({ terminalSettings }: TerminalDockProps) {
   }
 
   return (
-    <div className="terminal-dock">
+    <div className="terminal-dock terminal-dock--resizable" style={{ height: dockHeight }}>
+      <div
+        className="panel-resize-handle panel-resize-handle--top"
+        onPointerDown={startDockResize}
+        role="separator"
+        aria-orientation="horizontal"
+        aria-label="Resize terminal"
+        title="Resize terminal"
+      />
       <div className="terminal-dock-header">
         <div className="terminal-dock-tabs">
           {tabs.map(tab => (
@@ -264,11 +340,6 @@ export default function TerminalDock({ terminalSettings }: TerminalDockProps) {
       </div>
 
       <div className="terminal-dock-body">
-        {!window.electronAPI?.createTerminal && (
-          <div className="terminal-dock-unavailable">
-            Real terminal support is available in Electron. Run the desktop app to start shell sessions.
-          </div>
-        )}
         {error && (
           <div className="terminal-dock-unavailable">
             {error}

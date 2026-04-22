@@ -1,6 +1,7 @@
-import { useState, useRef, useCallback, useMemo, useEffect, type ChangeEvent } from "react";
+import { useState, useRef, useCallback, useMemo, useEffect, type ChangeEvent, type PointerEvent as ReactPointerEvent } from "react";
 import "./styles.css";
 import { saveAs } from "file-saver";
+import { invoke } from "@tauri-apps/api/core";
 
 import Palette from "./components/Palette";
 import Canvas from "./components/Canvas";
@@ -65,10 +66,14 @@ const MAX_SCALE = 2.4;
 const ZOOM_STEP = 1.14;
 const RECENT_PROJECTS_KEY = "archiviz_recent_projects";
 const MAX_RECENT_PROJECTS = 6;
+const AUTOSAVE_PROJECT_KEY = "archiviz_project_autosave";
+const AUTOSAVE_DEBOUNCE_MS = 900;
 const EDITOR_SETTINGS_KEY    = "archiviz_editor_settings";
 const DOCKER_SETTINGS_KEY    = "archiviz_docker_settings";
 const GIT_SETTINGS_KEY       = "archiviz_git_settings";
 const TERMINAL_SETTINGS_KEY  = "archiviz_terminal_settings";
+const PALETTE_WIDTH_KEY      = "archiviz_palette_width";
+const CODE_PANEL_WIDTH_KEY   = "archiviz_code_panel_width";
 
 const dedupeFiles = (files: WorkspaceFile[]) => {
   const fileMap = new Map<string, string>();
@@ -76,19 +81,180 @@ const dedupeFiles = (files: WorkspaceFile[]) => {
   return Array.from(fileMap.entries()).map(([path, content]) => ({ path, content }));
 };
 
-const isHiddenWorkspacePlaceholder = (path: string) => path.split("/").pop() === ".gitkeep";
+const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
 
-
-const getBuildCommand = (_files: WorkspaceFile[], buildTool: BuildTool) => {
-  return buildTool === "gradle"
-    ? "gradle clean build -x test"
-    : "mvn clean package -DskipTests";
+const loadNumberSetting = (key: string, fallback: number, min: number, max: number) => {
+  const value = Number(localStorage.getItem(key));
+  return Number.isFinite(value) ? clamp(value, min, max) : fallback;
 };
 
-const getRunCommand = (_files: WorkspaceFile[], buildTool: BuildTool) => {
-  return buildTool === "gradle"
-    ? "gradle bootRun"
-    : "mvn spring-boot:run";
+const isHiddenWorkspacePlaceholder = (path: string) => path.split("/").pop() === ".gitkeep";
+
+const hasWorkspaceFile = (files: WorkspaceFile[], path: string) => files.some(file => file.path === path);
+
+type BuildDiagnostic = {
+  path: string;
+  lineNumber?: number;
+  column?: number;
+  message: string;
+};
+
+const CODE_AGENT_CONTEXT_LIMIT = 100_000;
+const CODE_AGENT_FILE_LIMIT = 18_000;
+
+const getProjectCommandParts = (mode: "build" | "run", buildTool: BuildTool, files: WorkspaceFile[]) => {
+  if (buildTool === "gradle") {
+    const program = hasWorkspaceFile(files, "gradlew")
+      ? "./gradlew"
+      : hasWorkspaceFile(files, "gradlew.bat")
+        ? "gradlew.bat"
+        : "gradle";
+    return {
+      program,
+      args: mode === "build" ? ["build", "-x", "test"] : ["bootRun"],
+    };
+  }
+
+  const program = hasWorkspaceFile(files, "mvnw")
+    ? "./mvnw"
+    : hasWorkspaceFile(files, "mvnw.cmd")
+      ? "mvnw.cmd"
+      : "mvn";
+  return {
+    program,
+    args: mode === "build" ? ["clean", "package", "-DskipTests"] : ["spring-boot:run"],
+  };
+};
+
+const formatCommandLine = ({ program, args }: { program: string; args: string[] }) => [program, ...args].join(" ");
+
+const parseBuildDiagnostics = (output: string, files: WorkspaceFile[]): BuildDiagnostic[] => {
+  const normalizedOutput = output.replace(/\\/g, "/");
+  const lines = normalizedOutput.split(/\r?\n/);
+  const sourceFiles = files
+    .filter(file => !isHiddenWorkspacePlaceholder(file.path))
+    .map(file => ({
+      path: file.path.replace(/\\/g, "/").replace(/^\/+/, ""),
+    }));
+  const diagnostics = new Map<string, BuildDiagnostic>();
+  const errorLinePattern = /\b(error|failed|failure|exception|cannot find symbol|compilation failure)\b/i;
+  const sourcePathPattern = /\.(java|kt|xml|properties|ya?ml|gradle|kts|json)\b/i;
+
+  for (const line of lines) {
+    if (!errorLinePattern.test(line) && !sourcePathPattern.test(line)) continue;
+
+    for (const file of sourceFiles) {
+      const fileIndex = line.includes(file.path) ? line.indexOf(file.path) : line.indexOf(`/${file.path}`);
+      if (fileIndex < 0) continue;
+
+      const afterPath = line.slice(fileIndex + file.path.length);
+      const bracketLocation = afterPath.match(/\[(\d+)(?:,(\d+))?\]/);
+      const colonLocation = afterPath.match(/:(\d+)(?::(\d+))?(?::|\s)/);
+      const location = bracketLocation ?? colonLocation;
+      const lineNumber = location?.[1] ? Number(location[1]) : undefined;
+      const column = location?.[2] ? Number(location[2]) : undefined;
+      const message = line
+        .replace(/^\[[A-Z]+\]\s*/, "")
+        .replace(/^>\s*/, "")
+        .trim() || "Build error";
+
+      diagnostics.set(`${file.path}:${lineNumber ?? 0}:${column ?? 0}`, {
+        path: file.path,
+        lineNumber,
+        column,
+        message,
+      });
+    }
+  }
+
+  if (diagnostics.size === 0 && errorLinePattern.test(normalizedOutput)) {
+    for (const file of sourceFiles) {
+      if (normalizedOutput.includes(file.path) || normalizedOutput.includes(`/${file.path}`)) {
+        diagnostics.set(file.path, {
+          path: file.path,
+          lineNumber: 1,
+          column: 1,
+          message: "Build error",
+        });
+      }
+    }
+  }
+
+  return Array.from(diagnostics.values());
+};
+
+const buildCodeAgentPrompt = ({
+  projectName,
+  buildTool,
+  javaVersion,
+  springBootVersion,
+  files,
+  diagnostics,
+}: {
+  projectName: string;
+  buildTool: BuildTool;
+  javaVersion: JavaVersion;
+  springBootVersion: SpringBootVersion;
+  files: WorkspaceFile[];
+  diagnostics: BuildDiagnostic[];
+}) => {
+  const diagnosticPaths = new Set(diagnostics.map(diagnostic => diagnostic.path));
+  const sortedFiles = [...files]
+    .filter(file => !isHiddenWorkspacePlaceholder(file.path) && !file.path.startsWith(".git/"))
+    .sort((a, b) => {
+      const aHasError = diagnosticPaths.has(a.path);
+      const bHasError = diagnosticPaths.has(b.path);
+      if (aHasError !== bHasError) return aHasError ? -1 : 1;
+      return a.path.localeCompare(b.path);
+    });
+
+  let remaining = CODE_AGENT_CONTEXT_LIMIT;
+  const includedFiles: string[] = [];
+  const omittedFiles: string[] = [];
+
+  for (const file of sortedFiles) {
+    const content = file.content.length > CODE_AGENT_FILE_LIMIT
+      ? `${file.content.slice(0, CODE_AGENT_FILE_LIMIT)}\n\n/* File truncated for AI review. */`
+      : file.content;
+    const block = `=== FILE: ${file.path} ===\n${content}`;
+
+    if (block.length > remaining) {
+      omittedFiles.push(file.path);
+      continue;
+    }
+
+    includedFiles.push(block);
+    remaining -= block.length;
+  }
+
+  const buildErrors = diagnostics.length > 0
+    ? diagnostics.map(diagnostic => {
+        const location = diagnostic.lineNumber
+          ? `:${diagnostic.lineNumber}${diagnostic.column ? `:${diagnostic.column}` : ""}`
+          : "";
+        return `- ${diagnostic.path}${location} ${diagnostic.message}`;
+      }).join("\n")
+    : "No build diagnostics captured yet.";
+
+  return [
+    "You are an AI code fix agent inside an architecture IDE.",
+    "Review this Java/Spring Boot project and propose concrete fixes. Do not invent files that are not needed.",
+    "Prioritize build errors, missing imports, invalid annotations, broken configuration, security mistakes, and runtime wiring issues.",
+    "Return Markdown with these sections only: Findings, Proposed Fixes, Patch Plan, Verification.",
+    "For each finding, include the file path and line when available. Keep proposed code snippets focused.",
+    "",
+    `Project: ${projectName || "architecture-app"}`,
+    `Build tool: ${buildTool}`,
+    `Java: ${javaVersion}`,
+    `Spring Boot: ${springBootVersion}`,
+    "",
+    "Current build diagnostics:",
+    buildErrors,
+    "",
+    omittedFiles.length > 0 ? `Omitted because of context limit: ${omittedFiles.join(", ")}` : "All available files are included.",
+    "",
+    includedFiles.join("\n\n"),
+  ].join("\n");
 };
 
 type SavedProjectFile = {
@@ -111,6 +277,62 @@ type RecentProject = {
   openedAt: string;
   path?: string;
   fileName?: string;
+};
+
+type GitRunResult = {
+  ok: boolean;
+  code: number;
+  stdout: string;
+  stderr: string;
+  command: string;
+  cwd: string;
+  displayPath: string;
+  isRepository: boolean;
+};
+
+type WorkspaceMaterializeResult = {
+  cwd: string;
+  displayPath: string;
+};
+
+type WorkspaceCommandResult = {
+  ok: boolean;
+  code: number;
+  stdout: string;
+  stderr: string;
+  command: string;
+  cwd: string;
+  displayPath: string;
+};
+
+type AutoSaveStatus = "idle" | "saving" | "saved" | "error";
+
+const isSavedProjectFile = (parsed: Partial<SavedProjectFile>): parsed is SavedProjectFile => (
+  parsed.version === 1 &&
+  !!parsed.graph &&
+  Array.isArray(parsed.graph.nodes) &&
+  Array.isArray(parsed.graph.edges) &&
+  typeof parsed.projectName === "string" &&
+  typeof parsed.javaVersion === "string" &&
+  typeof parsed.springBootVersion === "string" &&
+  typeof parsed.buildTool === "string" &&
+  typeof parsed.prompt === "string"
+);
+
+const getProjectSignature = (project: SavedProjectFile) => {
+  const { savedAt: _savedAt, ...snapshot } = project;
+  return JSON.stringify(snapshot);
+};
+
+const loadAutosavedProject = (): SavedProjectFile | null => {
+  try {
+    const saved = localStorage.getItem(AUTOSAVE_PROJECT_KEY);
+    if (!saved) return null;
+    const parsed = JSON.parse(saved) as Partial<SavedProjectFile>;
+    return isSavedProjectFile(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
 };
 
 const loadRecentProjects = (): RecentProject[] => {
@@ -139,6 +361,7 @@ const loadEditorSettings = (): EditorSettings => {
     return {
       ...DEFAULT_EDITOR_SETTINGS,
       ...parsed,
+      theme: parsed.theme === "light" ? "light" : "dark",
       fontSize: Number(parsed.fontSize) || DEFAULT_EDITOR_SETTINGS.fontSize,
       lineHeight: Number(parsed.lineHeight) || DEFAULT_EDITOR_SETTINGS.lineHeight,
       tabSize: Number(parsed.tabSize) || DEFAULT_EDITOR_SETTINGS.tabSize,
@@ -250,6 +473,8 @@ export default function App() {
   const [terminalSettings, setTerminalSettings] = useState<TerminalSettings>(loadTerminalSettings);
   const [dockerSettings, setDockerSettings] = useState<DockerSettings>(loadDockerSettings);
   const [gitSettings, setGitSettings] = useState<GitSettings>(loadGitSettings);
+  const [paletteWidth, setPaletteWidth] = useState(() => loadNumberSetting(PALETTE_WIDTH_KEY, 286, 220, 460));
+  const [codePanelWidth, setCodePanelWidth] = useState(() => loadNumberSetting(CODE_PANEL_WIDTH_KEY, 380, 300, 560));
 
   const language: Language = "java";
   const [javaVersion, setJavaVersion] = useState<JavaVersion>("21");
@@ -266,6 +491,9 @@ export default function App() {
   const [activeProjectStarted, setActiveProjectStarted] = useState(false);
   const [showStartupProjectConfig, setShowStartupProjectConfig] = useState(false);
   const [recentProjects, setRecentProjects] = useState<RecentProject[]>(loadRecentProjects);
+  const [autosavedProject, setAutosavedProject] = useState<SavedProjectFile | null>(loadAutosavedProject);
+  const [autoSaveStatus, setAutoSaveStatus] = useState<AutoSaveStatus>("idle");
+  const [lastAutoSavedAt, setLastAutoSavedAt] = useState<string | null>(autosavedProject?.savedAt ?? null);
 
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
@@ -281,6 +509,7 @@ export default function App() {
   const [nodeCode, setNodeCode] = useState<Record<string, { path: string; content: string }[]>>({});
   const [workspaceFiles, setWorkspaceFiles] = useState<WorkspaceFile[]>([]);
   const [activeWorkspacePath, setActiveWorkspacePath] = useState<string | null>(null);
+  const [buildDiagnostics, setBuildDiagnostics] = useState<BuildDiagnostic[]>([]);
   const [workspaceView, setWorkspaceView] = useState<"canvas" | "editor" | "api" | null>("canvas");
   const [gitRepositoryReady, setGitRepositoryReady] = useState(false);
   const [topbarGitBusy, setTopbarGitBusy] = useState(false);
@@ -290,7 +519,9 @@ export default function App() {
   const [topbarGitTargetBranch, setTopbarGitTargetBranch] = useState("main");
   const [topbarGitBranches, setTopbarGitBranches] = useState<string[]>([]);
   const [projectGenerating, setProjectGenerating] = useState(false);
-  const [runnerBusy, setRunnerBusy] = useState(false);
+  const [codeAgentRunning, setCodeAgentRunning] = useState(false);
+  const [codeAgentOutput, setCodeAgentOutput] = useState("");
+  const [runnerBusy] = useState(false);
   const [genError, setGenError] = useState<{ message: string; failedNodes?: string[] } | null>(null);
 
   const [camera, setCamera] = useState<Camera>({ x: 120, y: 72, scale: 1 });
@@ -300,6 +531,9 @@ export default function App() {
   const projectGenerationInFlightRef = useRef(false);
   const folderInputRef = useRef<HTMLInputElement>(null);
   const projectFileInputRef = useRef<HTMLInputElement>(null);
+  const lastSavedSignatureRef = useRef<string>(autosavedProject ? getProjectSignature(autosavedProject) : "");
+  const buildOnOpenRef = useRef(false);
+  const codeAgentAbortRef = useRef<AbortController | null>(null);
 
   const toggleWorkspaceView = useCallback((view: "canvas" | "editor" | "api") => {
     setWorkspaceView(current => current === view ? null : view);
@@ -324,6 +558,52 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem(GIT_SETTINGS_KEY, JSON.stringify(gitSettings));
   }, [gitSettings]);
+
+  useEffect(() => {
+    localStorage.setItem(PALETTE_WIDTH_KEY, String(paletteWidth));
+  }, [paletteWidth]);
+
+  useEffect(() => {
+    localStorage.setItem(CODE_PANEL_WIDTH_KEY, String(codePanelWidth));
+  }, [codePanelWidth]);
+
+  const startPaletteResize = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = paletteWidth;
+    document.body.classList.add("resizing-panel", "resizing-panel--x");
+
+    const onMove = (moveEvent: globalThis.PointerEvent) => {
+      setPaletteWidth(clamp(startWidth + moveEvent.clientX - startX, 220, 460));
+    };
+    const onUp = () => {
+      document.body.classList.remove("resizing-panel", "resizing-panel--x");
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  }, [paletteWidth]);
+
+  const startCodePanelResize = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = codePanelWidth;
+    document.body.classList.add("resizing-panel", "resizing-panel--x");
+
+    const onMove = (moveEvent: globalThis.PointerEvent) => {
+      setCodePanelWidth(clamp(startWidth + startX - moveEvent.clientX, 300, 560));
+    };
+    const onUp = () => {
+      document.body.classList.remove("resizing-panel", "resizing-panel--x");
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  }, [codePanelWidth]);
 
   /* =======================
      SERVICES (STABLE)
@@ -358,6 +638,61 @@ export default function App() {
   const hasCanvasContent = graph.nodes.length > 0;
   const hasPrompt = prompt.trim().length > 0;
   const hasProjectData = hasCanvasContent || hasPrompt;
+  const buildProjectPayload = useCallback((savedAt = new Date().toISOString()): SavedProjectFile => ({
+    version: 1,
+    savedAt,
+    projectName,
+    javaVersion,
+    springBootVersion,
+    buildTool,
+    prompt,
+    graph,
+    nodeCode,
+    workspaceFiles,
+    dockerSettings,
+  }), [buildTool, dockerSettings, graph, javaVersion, nodeCode, projectName, prompt, springBootVersion, workspaceFiles]);
+  const projectSignature = useMemo(
+    () => getProjectSignature(buildProjectPayload("")),
+    [buildProjectPayload]
+  );
+  const hasUnsavedChanges = activeProjectStarted && projectSignature !== lastSavedSignatureRef.current;
+  const autoSaveLabel = autoSaveStatus === "saving"
+    ? "Autosaving..."
+    : autoSaveStatus === "error"
+      ? "Autosave failed"
+      : lastAutoSavedAt
+        ? `Autosaved ${new Date(lastAutoSavedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
+        : "Autosave ready";
+
+  useEffect(() => {
+    if (!activeProjectStarted) return;
+
+    setAutoSaveStatus("saving");
+    const timeout = window.setTimeout(async () => {
+      const payload = buildProjectPayload();
+      const json = JSON.stringify(payload, null, 2);
+
+      try {
+        localStorage.setItem(AUTOSAVE_PROJECT_KEY, json);
+        setAutosavedProject(payload);
+        setLastAutoSavedAt(payload.savedAt);
+
+        if (projectFileHandle) {
+          const writable = await projectFileHandle.createWritable();
+          await writable.write(json);
+          await writable.close();
+        }
+
+        lastSavedSignatureRef.current = getProjectSignature(payload);
+        setAutoSaveStatus("saved");
+      } catch (error) {
+        console.error("[autosave]", error);
+        setAutoSaveStatus("error");
+      }
+    }, AUTOSAVE_DEBOUNCE_MS);
+
+    return () => window.clearTimeout(timeout);
+  }, [activeProjectStarted, buildProjectPayload, projectFileHandle]);
 
   /* =======================
      GRAPH ACTIONS
@@ -642,6 +977,7 @@ export default function App() {
     setNodeCode({});
     setWorkspaceFiles([]);
     setActiveWorkspacePath(null);
+    setBuildDiagnostics([]);
     setWorkspaceView("canvas");
     setGitRepositoryReady(false);
     setTopbarGitBranches([]);
@@ -667,11 +1003,14 @@ export default function App() {
     setNodeCode({});
     setWorkspaceFiles([]);
     setActiveWorkspacePath(null);
+    setBuildDiagnostics([]);
     setWorkspaceView("canvas");
     setGitRepositoryReady(false);
     setTopbarGitBranches([]);
     setTopbarGitCurrentBranch("main");
     setTopbarGitTargetBranch("main");
+    lastSavedSignatureRef.current = "";
+    setAutoSaveStatus("idle");
   }, []);
 
   const createConfiguredProject = useCallback((cfg: JavaProjectConfig) => {
@@ -701,6 +1040,7 @@ export default function App() {
     const restoredFiles = parsed.workspaceFiles ?? Object.values(parsed.nodeCode ?? {}).flat();
     setWorkspaceFiles(restoredFiles);
     setActiveWorkspacePath(restoredFiles[0]?.path ?? null);
+    setBuildDiagnostics([]);
     setWorkspaceView(restoredFiles.length > 0 ? "editor" : "canvas");
     setGitRepositoryReady(false);
     setTopbarGitBranches([]);
@@ -708,17 +1048,7 @@ export default function App() {
     setTopbarGitTargetBranch("main");
   }, []);
 
-  const validateProjectData = (parsed: Partial<SavedProjectFile>): parsed is SavedProjectFile => (
-    parsed.version === 1 &&
-    !!parsed.graph &&
-    Array.isArray(parsed.graph.nodes) &&
-    Array.isArray(parsed.graph.edges) &&
-    typeof parsed.projectName === "string" &&
-    typeof parsed.javaVersion === "string" &&
-    typeof parsed.springBootVersion === "string" &&
-    typeof parsed.buildTool === "string" &&
-    typeof parsed.prompt === "string"
-  );
+  const validateProjectData = (parsed: Partial<SavedProjectFile>): parsed is SavedProjectFile => isSavedProjectFile(parsed);
 
   const rememberRecentProject = useCallback((project: { name: string; path?: string; fileName?: string }) => {
     setRecentProjects(prev => {
@@ -740,22 +1070,18 @@ export default function App() {
     });
   }, []);
 
-  const forgetRecentProject = useCallback((id: string) => {
-    setRecentProjects(prev => {
-      const next = prev.filter(item => item.id !== id);
-      localStorage.setItem(RECENT_PROJECTS_KEY, JSON.stringify(next));
-      return next;
-    });
-  }, []);
-
   const openParsedProject = useCallback((
     parsed: Partial<SavedProjectFile>,
     options: { handle?: FileSystemFileHandle | null; path?: string; fileName?: string } = {}
   ) => {
     if (!validateProjectData(parsed)) throw new Error("Invalid project file");
+    buildOnOpenRef.current = true;
     applyProjectData(parsed);
     setProjectFileHandle(options.handle ?? null);
     setActiveProjectStarted(true);
+    lastSavedSignatureRef.current = getProjectSignature(parsed);
+    setAutoSaveStatus("saved");
+    setLastAutoSavedAt(parsed.savedAt);
     rememberRecentProject({
       name: parsed.projectName,
       path: options.path,
@@ -768,19 +1094,6 @@ export default function App() {
   }, []);
 
   const onOpenSavedProject = useCallback(async () => {
-    if (window.electronAPI?.openProjectFile) {
-      try {
-        const result = await window.electronAPI.openProjectFile();
-        if (!result) return;
-        const parsed = JSON.parse(result.content) as Partial<SavedProjectFile>;
-        openParsedProject(parsed, { path: result.path, fileName: result.name });
-      } catch (err: any) {
-        console.error(err);
-        alert("Could not open this project file.");
-      }
-      return;
-    }
-
     if ("showOpenFilePicker" in window) {
       try {
         const [handle] = await (window as any).showOpenFilePicker({
@@ -802,22 +1115,21 @@ export default function App() {
   }, [openParsedProject]);
 
   const onOpenRecentProject = useCallback(async (recent: RecentProject) => {
-    if (recent.path && window.electronAPI?.readProjectFile) {
-      try {
-        const result = await window.electronAPI.readProjectFile(recent.path);
-        const parsed = JSON.parse(result.content) as Partial<SavedProjectFile>;
-        openParsedProject(parsed, { path: result.path, fileName: result.name });
-      } catch (error: any) {
-        console.error(error);
-        alert(error?.message ?? "Could not reopen this project.");
-        forgetRecentProject(recent.id);
-      }
-      return;
-    }
-
-    alert("This recent project needs to be selected again from disk.");
+    alert(`"${recent.name}" needs to be selected again from disk.`);
     projectFileInputRef.current?.click();
-  }, [forgetRecentProject, openParsedProject]);
+  }, []);
+
+  const resumeAutosavedProject = useCallback(() => {
+    if (!autosavedProject) return;
+    openParsedProject(autosavedProject, { fileName: `${autosavedProject.projectName}.autosave` });
+  }, [autosavedProject, openParsedProject]);
+
+  const clearAutosavedProject = useCallback(() => {
+    localStorage.removeItem(AUTOSAVE_PROJECT_KEY);
+    setAutosavedProject(null);
+    setLastAutoSavedAt(null);
+    setAutoSaveStatus("idle");
+  }, []);
 
   const onProjectFolderSelected = useCallback(
     async (e: ChangeEvent<HTMLInputElement>) => {
@@ -872,26 +1184,22 @@ export default function App() {
   }, [openParsedProject]);
 
   const saveProject = useCallback(async () => {
-    const payload: SavedProjectFile = {
-      version: 1,
-      savedAt: new Date().toISOString(),
-      projectName,
-      javaVersion,
-      springBootVersion,
-      buildTool,
-      prompt,
-      graph,
-      nodeCode,
-      workspaceFiles,
-      dockerSettings,
-    };
+    const payload = buildProjectPayload();
     const json = JSON.stringify(payload, null, 2);
+    const markSaved = () => {
+      localStorage.setItem(AUTOSAVE_PROJECT_KEY, json);
+      setAutosavedProject(payload);
+      setLastAutoSavedAt(payload.savedAt);
+      lastSavedSignatureRef.current = getProjectSignature(payload);
+      setAutoSaveStatus("saved");
+    };
 
     if (projectFileHandle) {
       try {
         const writable = await projectFileHandle.createWritable();
         await writable.write(json);
         await writable.close();
+        markSaved();
       } catch (err) {
         console.error(err);
       }
@@ -908,6 +1216,7 @@ export default function App() {
         const writable = await handle.createWritable();
         await writable.write(json);
         await writable.close();
+        markSaved();
       } catch (err: any) {
         if (err.name !== "AbortError") console.error(err);
       }
@@ -916,7 +1225,8 @@ export default function App() {
 
     // Fallback for browsers without File System Access API
     saveAs(new Blob([json], { type: "application/json;charset=utf-8" }), `${projectName || "project"}.archbuilder.json`);
-  }, [buildTool, dockerSettings, javaVersion, springBootVersion, graph, nodeCode, projectName, prompt, projectFileHandle, workspaceFiles]);
+    markSaved();
+  }, [buildProjectPayload, projectFileHandle, projectName]);
 
   /* =======================
      EXPORT TO IDE ZIP
@@ -988,53 +1298,85 @@ export default function App() {
     return dedupeFiles([...scaffoldFiles, ...generatedFiles]);
   }, [buildTool, dockerSettings, javaVersion, nodeCode, projectName, scaffoldService, springBootVersion, workspaceFiles]);
 
-  const runTopbarGit = useCallback(async (args: string[], filesOverride?: WorkspaceFile[]) => {
-    if (!window.electronAPI?.runGit) {
-      if (!window.electronAPI) {
-        alert("Git operations are only available in the Electron desktop app, not the browser.");
-      } else {
-        alert("Git IPC handler not loaded. Quit and restart the Electron app so the latest preload is applied.");
-      }
-      return null;
+  const materializeProjectWorkspace = useCallback(async (filesOverride?: WorkspaceFile[]) => {
+    const files = filesOverride ?? getRunnableProjectFiles();
+    if (files.length === 0) {
+      throw new Error("Generate or create project files first.");
     }
 
-    return window.electronAPI.runGit({
-      projectName,
-      files: filesOverride ?? getRunnableProjectFiles(),
-      args,
+    return invoke<WorkspaceMaterializeResult>("workspace_materialize", {
+      options: {
+        projectName,
+        files,
+      },
     });
   }, [getRunnableProjectFiles, projectName]);
 
-  const refreshTopbarGit = useCallback(async (filesOverride?: WorkspaceFile[]) => {
-    if (!window.electronAPI?.runGit) return;
-
+  const checkProjectBuild = useCallback(async (filesOverride?: WorkspaceFile[]) => {
     const files = filesOverride ?? getRunnableProjectFiles();
-    const base = { projectName, files };
-    const [status, branchList] = await Promise.all([
-      window.electronAPI.runGit({ ...base, args: ["status", "--short", "--branch"] }),
-      window.electronAPI.runGit({ ...base, args: ["branch", "--list"] }),
-    ]);
+    if (files.length === 0) return;
 
-    const parsedBranches = branchList.stdout.split(/\r?\n/)
-      .map(line => line.trim())
-      .filter(Boolean)
-      .map(line => line.replace(/^\*\s*/, ""));
-    const active = branchList.stdout.split(/\r?\n/).find(line => line.startsWith("* "));
-    const activeBranch = active?.replace(/^\*\s*/, "").trim();
-
-    setGitRepositoryReady(status.isRepository || branchList.isRepository);
-    setTopbarGitBranches(parsedBranches);
-    if (activeBranch) {
-      setTopbarGitCurrentBranch(activeBranch);
-      setTopbarGitTargetBranch(prev => prev && parsedBranches.includes(prev) ? prev : activeBranch);
+    const command = getProjectCommandParts("build", buildTool, files);
+    try {
+      const result = await invoke<WorkspaceCommandResult>("workspace_command", {
+        options: {
+          projectName,
+          files,
+          program: command.program,
+          args: command.args,
+        },
+      });
+      const diagnostics = result.ok ? [] : parseBuildDiagnostics(`${result.stdout}\n${result.stderr}`, files);
+      setBuildDiagnostics(diagnostics);
+    } catch (error) {
+      console.warn("[build-check]", error);
+      setBuildDiagnostics([]);
     }
+  }, [buildTool, getRunnableProjectFiles, projectName]);
+
+  const runTopbarGit = useCallback(async (args: string[], filesOverride?: WorkspaceFile[]) => {
+    return invoke<GitRunResult>("git_run", {
+      options: {
+        projectName,
+        files: filesOverride ?? getRunnableProjectFiles(),
+        args,
+      },
+    });
   }, [getRunnableProjectFiles, projectName]);
+
+  const refreshTopbarGit = useCallback(async () => {
+    const files = getRunnableProjectFiles();
+    try {
+      const status = await runTopbarGit(["status", "--short", "--branch"], files);
+      const branchList = await runTopbarGit(["branch", "--list"], files);
+
+      const parsedBranches = branchList.stdout.split(/\r?\n/)
+        .map(line => line.trim())
+        .filter(Boolean)
+        .map(line => line.replace(/^\*\s*/, ""));
+      const active = branchList.stdout.split(/\r?\n/).find(line => line.startsWith("* "));
+      const activeBranch = active?.replace(/^\*\s*/, "").trim();
+
+      setGitRepositoryReady(status.isRepository || branchList.isRepository);
+      setTopbarGitBranches(parsedBranches);
+      if (activeBranch) {
+        setTopbarGitCurrentBranch(activeBranch);
+        setTopbarGitTargetBranch(prev => prev && parsedBranches.includes(prev) ? prev : activeBranch);
+      }
+    } catch {
+      setGitRepositoryReady(false);
+      setTopbarGitBranches([]);
+    }
+  }, [getRunnableProjectFiles, runTopbarGit]);
+
+  useEffect(() => {
+    void refreshTopbarGit();
+  }, [refreshTopbarGit]);
 
   const runTopbarGitOperation = useCallback(async () => {
     const runnableFiles = getRunnableProjectFiles();
     const currentBranch = topbarGitCurrentBranch || "main";
     const targetBranch = topbarGitTargetBranch || currentBranch;
-
     const run = async (args: string[]) => runTopbarGit(args, runnableFiles);
 
     setTopbarGitBusy(true);
@@ -1047,7 +1389,7 @@ export default function App() {
           setWorkspaceView("editor");
         }
       } else if (topbarGitOperation === "status") {
-        await refreshTopbarGit(runnableFiles);
+        await refreshTopbarGit();
       } else if (topbarGitOperation === "fetch") {
         await run(["fetch", "--all", "--prune"]);
       } else if (topbarGitOperation === "set-origin") {
@@ -1076,7 +1418,7 @@ export default function App() {
         await run(["merge", "--abort"]);
       }
 
-      await refreshTopbarGit(runnableFiles);
+      await refreshTopbarGit();
     } catch (error: any) {
       alert(error?.message ?? "Git operation failed.");
     } finally {
@@ -1093,31 +1435,10 @@ export default function App() {
   ]);
 
   const runProjectCommand = useCallback(async (mode: "build" | "run") => {
-    if (!window.electronAPI?.materializeWorkspace) {
-      if (!window.electronAPI) {
-        alert("Build and Run are only available in the Electron desktop app, not the browser.");
-      } else {
-        alert("Build/Run IPC handler not loaded. Quit and restart the Electron app so the latest preload is applied.");
-      }
-      return;
-    }
-
-    const runnableFiles = getRunnableProjectFiles();
-    if (runnableFiles.length === 0) {
-      alert("Generate or create project files before building.");
-      return;
-    }
-
-    setRunnerBusy(true);
-
     try {
-      const { cwd } = await window.electronAPI.materializeWorkspace({
-        projectName,
-        files: runnableFiles,
-      });
-      const command = mode === "build"
-        ? getBuildCommand(runnableFiles, buildTool)
-        : getRunCommand(runnableFiles, buildTool);
+      const files = getRunnableProjectFiles();
+      const { cwd } = await materializeProjectWorkspace(files);
+      const command = formatCommandLine(getProjectCommandParts(mode, buildTool, files));
 
       window.dispatchEvent(new CustomEvent("archiviz:terminal-command", {
         detail: {
@@ -1127,15 +1448,23 @@ export default function App() {
         },
       }));
     } catch (error: any) {
-      console.error("[runner]", error);
-      const message = String(error?.message ?? "");
-      alert(message.includes("No handler registered for 'workspace:materialize'")
-        ? "Build/Run support was added to Electron. Restart the desktop app with npm run dev so the main process can load the new IPC handler."
-        : message || "Could not start the project runner.");
-    } finally {
-      setRunnerBusy(false);
+      alert(error?.message ?? "Could not prepare the project workspace.");
     }
-  }, [buildTool, getRunnableProjectFiles, projectName]);
+  }, [buildTool, getRunnableProjectFiles, materializeProjectWorkspace]);
+
+  useEffect(() => {
+    if (!buildOnOpenRef.current || !activeProjectStarted) return;
+
+    const files = getRunnableProjectFiles();
+    if (files.length === 0) return;
+
+    buildOnOpenRef.current = false;
+    const timeout = window.setTimeout(() => {
+      void checkProjectBuild(files);
+    }, 450);
+
+    return () => window.clearTimeout(timeout);
+  }, [activeProjectStarted, checkProjectBuild, getRunnableProjectFiles]);
 
   /* =======================
      PROMPT
@@ -1196,6 +1525,7 @@ export default function App() {
 
       setWorkspaceFiles(files);
       setActiveWorkspacePath(files[0]?.path ?? null);
+      setBuildDiagnostics([]);
       setWorkspaceView("editor");
     } catch (err: any) {
       if (err?.name !== "AbortError") {
@@ -1208,12 +1538,79 @@ export default function App() {
     }
   }, [ai, buildTool, graph, hasCanvasContent, javaVersion, projectName, prompt, settings, springBootVersion]);
 
+  const runCodeFixAgent = useCallback(async () => {
+    if (codeAgentRunning) return;
+
+    if (!settings || !ai) {
+      alert("Configure AI in Settings first.");
+      return;
+    }
+
+    const files = getRunnableProjectFiles();
+    if (files.length === 0) {
+      alert("Generate or open project files first.");
+      return;
+    }
+
+    codeAgentAbortRef.current?.abort();
+    const controller = new AbortController();
+    codeAgentAbortRef.current = controller;
+    setCodeAgentRunning(true);
+    setCodeAgentOutput("");
+
+    try {
+      const agentPrompt = buildCodeAgentPrompt({
+        projectName,
+        buildTool,
+        javaVersion,
+        springBootVersion,
+        files,
+        diagnostics: buildDiagnostics,
+      });
+
+      await ai.callStream(
+        [
+          {
+            role: "system",
+            content: "You are a senior code review and repair-planning agent. Be specific, practical, and concise.",
+          },
+          { role: "user", content: agentPrompt },
+        ],
+        token => setCodeAgentOutput(prev => prev + token),
+        controller.signal
+      );
+    } catch (error: any) {
+      if (error?.name !== "AbortError") {
+        console.error("[code-agent]", error);
+        setCodeAgentOutput(error?.message ?? "The code fix agent could not complete the review.");
+      }
+    } finally {
+      if (codeAgentAbortRef.current === controller) {
+        codeAgentAbortRef.current = null;
+      }
+      setCodeAgentRunning(false);
+    }
+  }, [
+    ai,
+    buildDiagnostics,
+    buildTool,
+    codeAgentRunning,
+    getRunnableProjectFiles,
+    javaVersion,
+    projectName,
+    settings,
+    springBootVersion,
+  ]);
+
   /* =======================
      CLEANUP
   ======================= */
 
   useEffect(() => {
-    return () => abortRef.current?.abort();
+    return () => {
+      abortRef.current?.abort();
+      codeAgentAbortRef.current?.abort();
+    };
   }, []);
 
   useEffect(() => {
@@ -1250,11 +1647,11 @@ export default function App() {
   useEffect(() => {
     if (!drag && !wire && !pan) return;
 
-    const handlePointerMove = (e: PointerEvent) => {
+    const handlePointerMove = (e: globalThis.PointerEvent) => {
       movePointerInteraction(e.clientX, e.clientY);
     };
 
-    const handlePointerUp = (e: PointerEvent) => {
+    const handlePointerUp = (e: globalThis.PointerEvent) => {
       if (wire) {
         completeWireFromPointer(e.clientX, e.clientY);
       }
@@ -1317,6 +1714,22 @@ export default function App() {
                 Open Project
               </button>
             </div>
+            {autosavedProject && (
+              <div className="startup-autosave">
+                <button className="startup-history-item" onClick={resumeAutosavedProject}>
+                  <span className="startup-history-icon">AS</span>
+                  <span className="startup-history-main">
+                    <span className="startup-history-name">Resume {autosavedProject.projectName || "autosaved project"}</span>
+                    <span className="startup-history-path">
+                      Autosaved {new Date(autosavedProject.savedAt).toLocaleString()}
+                    </span>
+                  </span>
+                </button>
+                <button className="startup-history-clear" onClick={clearAutosavedProject}>
+                  Discard autosave
+                </button>
+              </div>
+            )}
             <div className="startup-history">
               <div className="startup-history-header">
                 <span>Recent Projects</span>
@@ -1369,9 +1782,9 @@ export default function App() {
       )}
 
       <Topbar
-        generate={generate}
-        canGenerate={hasCanvasContent}
         canSaveProject={hasProjectData}
+        hasUnsavedChanges={hasUnsavedChanges}
+        autoSaveLabel={activeProjectStarted ? autoSaveLabel : undefined}
         importingProject={importingProject}
         javaVersion={javaVersion}
         setJavaVersion={setJavaVersion}
@@ -1437,8 +1850,19 @@ export default function App() {
             </nav>
 
             {workspaceView === "canvas" && (
-              <aside className="workspace-side-pane">
+              <aside
+                className="workspace-side-pane workspace-side-pane--resizable"
+                style={{ width: paletteWidth, flexBasis: paletteWidth }}
+              >
                 <Palette embedded workspaceFiles={workspaceFiles} />
+                <div
+                  className="panel-resize-handle panel-resize-handle--right"
+                  onPointerDown={startPaletteResize}
+                  role="separator"
+                  aria-orientation="vertical"
+                  aria-label="Resize components panel"
+                  title="Resize components panel"
+                />
               </aside>
             )}
 
@@ -1449,9 +1873,10 @@ export default function App() {
                   activePath={activeWorkspacePath}
                   onActivePathChange={setActiveWorkspacePath}
                   onFilesChange={setWorkspaceFiles}
-                  editorTheme="dark"
+                  editorTheme={editorSettings.theme}
                   editorSettings={editorSettings}
                   showGitFolder={gitRepositoryReady}
+                  errorDiagnostics={buildDiagnostics}
                   onBuildProject={() => void runProjectCommand("build")}
                   onRunProject={() => void runProjectCommand("run")}
                   runnerBusy={runnerBusy}
@@ -1488,10 +1913,15 @@ export default function App() {
             </div>
           </div>
 
-          <TerminalDock terminalSettings={terminalSettings} />
+          <TerminalDock
+            terminalSettings={terminalSettings}
+            getWorkspaceCwd={async () => (await materializeProjectWorkspace()).cwd}
+          />
         </div>
 
         <CodePanel
+          width={codePanelWidth}
+          onResizeStart={startCodePanelResize}
           prompt={prompt}
           setPrompt={setPrompt}
           filesCount={workspaceFiles.length}
@@ -1500,10 +1930,16 @@ export default function App() {
           gitSettings={gitSettings}
           gitRepositoryReady={gitRepositoryReady}
           onGitRepositoryChange={setGitRepositoryReady}
+          onGeneratePrompt={generate}
           onGenerateProject={generateProjectWithAI}
+          onRunCodeAgent={runCodeFixAgent}
           onOpenEditor={() => setWorkspaceView("editor")}
           aiGenerating={projectGenerating}
           canGenerateProject={!!settings && (hasPrompt || hasCanvasContent)}
+          codeAgentRunning={codeAgentRunning}
+          codeAgentOutput={codeAgentOutput}
+          canRunCodeAgent={!!settings && getRunnableProjectFiles().length > 0}
+          aiModelLabel={settings?.model || settings?.provider || ""}
         />
       </div>
 
@@ -1557,6 +1993,7 @@ export default function App() {
               setNodeCode(prev => ({ ...prev, [viewingNodeId]: updatedFiles }));
               setWorkspaceFiles(prev => dedupeFiles([...prev, ...updatedFiles]));
               setActiveWorkspacePath(updatedFiles[0]?.path ?? activeWorkspacePath);
+              setBuildDiagnostics([]);
             }}
           />
         ) : null;

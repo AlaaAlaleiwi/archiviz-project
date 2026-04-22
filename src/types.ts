@@ -47,7 +47,7 @@ export type Camera = {
   scale: number;
 
 };
-export type Language = "java";
+export type Language = "typescript" | "javascript" | "python" | "java" | "csharp" | "cpp" | "go" | "ruby" | "php" | "kotlin" | "swift";
 
 export type JavaVersion = "17" | "21" | "25";
 

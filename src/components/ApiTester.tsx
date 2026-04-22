@@ -369,31 +369,20 @@ export default function ApiTester({ files }: { files: WorkspaceFile[] }) {
         headers["Content-Type"] = "application/json";
       }
       const startedAt = performance.now();
-      const request = {
+      void timeoutMs;
+      const res = await fetch(url, {
         method,
-        url,
         headers,
         body: showBody ? body : undefined,
-        timeoutMs,
+      });
+      const result = {
+        status: res.status,
+        statusText: res.statusText,
+        durationMs: Math.round(performance.now() - startedAt),
+        headers: Object.fromEntries(res.headers.entries()),
+        body: await res.text(),
+        url: res.url,
       };
-
-      const result = window.electronAPI?.sendApiRequest
-        ? await window.electronAPI.sendApiRequest(request)
-        : await (async () => {
-            const res = await fetch(url, {
-              method,
-              headers,
-              body: showBody ? body : undefined,
-            });
-            return {
-              status: res.status,
-              statusText: res.statusText,
-              durationMs: Math.round(performance.now() - startedAt),
-              headers: Object.fromEntries(res.headers.entries()),
-              body: await res.text(),
-              url: res.url,
-            };
-          })();
 
       setResponse(result);
       setResponseView("body");

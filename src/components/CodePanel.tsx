@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import type { WorkspaceFile } from "./FileWorkspace";
 import type { GitSettings } from "./Settings";
 import "../styles.css";
@@ -6,6 +7,8 @@ import "../styles.css";
 type PanelTab = "prompt" | "git";
 
 type CodePanelProps = {
+  width?: number;
+  onResizeStart?: (event: ReactPointerEvent<HTMLDivElement>) => void;
   prompt: string;
   setPrompt: (prompt: string) => void;
   filesCount: number;
@@ -14,10 +17,16 @@ type CodePanelProps = {
   gitSettings: GitSettings;
   gitRepositoryReady: boolean;
   onGitRepositoryChange?: (isRepository: boolean) => void;
+  onGeneratePrompt: () => void;
   onGenerateProject: () => Promise<void>;
+  onRunCodeAgent: () => Promise<void>;
   onOpenEditor: () => void;
   aiGenerating: boolean;
   canGenerateProject: boolean;
+  codeAgentRunning: boolean;
+  codeAgentOutput: string;
+  canRunCodeAgent: boolean;
+  aiModelLabel: string;
 };
 
 type GitChange = { code: string; path: string };
@@ -26,6 +35,17 @@ type GitHubStatus = {
   kind: "idle" | "success" | "error";
   message: string;
   url?: string;
+};
+
+type GitRunResult = {
+  ok: boolean;
+  code: number;
+  stdout: string;
+  stderr: string;
+  command: string;
+  cwd: string;
+  displayPath: string;
+  isRepository: boolean;
 };
 
 const hashText = (value: string) => {
@@ -86,6 +106,8 @@ const buildCommitSuggestion = (statusText: string) => {
 };
 
 export default function CodePanel({
+  width,
+  onResizeStart,
   prompt,
   setPrompt,
   filesCount,
@@ -94,10 +116,16 @@ export default function CodePanel({
   gitSettings,
   gitRepositoryReady,
   onGitRepositoryChange,
+  onGeneratePrompt,
   onGenerateProject,
+  onRunCodeAgent,
   onOpenEditor,
   aiGenerating,
   canGenerateProject,
+  codeAgentRunning,
+  codeAgentOutput,
+  canRunCodeAgent,
+  aiModelLabel,
 }: CodePanelProps) {
   const [isOpen, setIsOpen] = useState(true);
   const [activeTab, setActiveTab] = useState<PanelTab>("prompt");
@@ -115,9 +143,9 @@ export default function CodePanel({
   const [repoName, setRepoName] = useState(projectName);
   const [repoDescription, setRepoDescription] = useState("");
   const [repoPrivate, setRepoPrivate] = useState(false);
+  const [originUrl, setOriginUrl] = useState("");
   const [githubBusy, setGithubBusy] = useState(false);
   const [githubStatus, setGithubStatus] = useState<GitHubStatus>({ kind: "idle", message: "" });
-  const lastSuggestedCommitRef = useRef("");
   const filesSignature = useMemo(() => getFilesSignature(files), [files]);
 
   const gitChanges = useMemo(() => parseGitChanges(gitStatusText), [gitStatusText]);
@@ -126,18 +154,9 @@ export default function CodePanel({
     value.match(/(?:[^\s"]+|"[^"]*")+/g)?.map(part => part.replace(/^"|"$/g, "")) ?? [];
 
   const runGit = async (args: string[], refresh = true) => {
-    if (!window.electronAPI?.runGit) {
-      setGitOutput("Git operations require the Electron desktop app.");
-      return null;
-    }
-    const isInitCommand = args[0] === "init";
-    if (files.length === 0 && !isInitCommand) {
-      setGitOutput("Generate project files before running Git operations.");
-      return null;
-    }
     setGitBusy(true);
     try {
-      const result = await window.electronAPI.runGit({ projectName, files, args });
+      const result = await invoke<GitRunResult>("git_run", { options: { projectName, files, args } });
       const output = [result.command, result.stdout, result.stderr].filter(Boolean).join("\n\n");
       setGitOutput(output || `${result.command}\n\nDone.`);
       setGitInitialized(result.isRepository);
@@ -145,7 +164,7 @@ export default function CodePanel({
       if (refresh) await refreshGit(false, false);
       return result;
     } catch (error: any) {
-      setGitOutput(error?.message ?? "Git operation failed.");
+      setGitOutput(error?.message ?? String(error) ?? "Git operation failed.");
       return null;
     } finally {
       setGitBusy(false);
@@ -153,38 +172,31 @@ export default function CodePanel({
   };
 
   const refreshGit = async (showOutput = true, showBusy = true) => {
-    if (!window.electronAPI?.runGit) {
-      if (showOutput) setGitOutput("No Git workspace available.");
-      return;
-    }
     if (showBusy) setGitBusy(true);
     try {
-      const base = { projectName, files };
-      const [status, branchList, log] = await Promise.all([
-        window.electronAPI.runGit({ ...base, args: ["status", "--short", "--branch"] }),
-        window.electronAPI.runGit({ ...base, args: ["branch", "--list"] }),
-        window.electronAPI.runGit({ ...base, args: ["log", "--oneline", "-10"] }),
-      ]);
+      const status = await invoke<GitRunResult>("git_run", { options: { projectName, files, args: ["status", "--short", "--branch"] } });
+      const branchList = await invoke<GitRunResult>("git_run", { options: { projectName, files, args: ["branch", "--list"] } });
+      const log = await invoke<GitRunResult>("git_run", { options: { projectName, files, args: ["log", "--oneline", "-10"] } });
+      const origin = await invoke<GitRunResult>("git_run", { options: { projectName, files, args: ["remote", "get-url", "origin"] } });
 
       const statusText = status.stdout || status.stderr || "";
       const suggestion = buildCommitSuggestion(status.stdout);
       setGitStatusText(statusText);
       setSuggestedCommitMessage(suggestion.message);
       setChangedFilesCount(suggestion.count);
-      setCommitMessage(prev => {
-        const shouldReplace = !prev.trim() || prev === lastSuggestedCommitRef.current;
-        return shouldReplace ? suggestion.message : prev;
-      });
-      lastSuggestedCommitRef.current = suggestion.message;
+      setCommitMessage(prev => prev.trim() ? prev : suggestion.message);
       const nextInitialized = status.isRepository || branchList.isRepository || log.isRepository;
       setGitInitialized(nextInitialized);
       onGitRepositoryChange?.(nextInitialized);
       const active = branchList.stdout.split(/\r?\n/).find(line => line.startsWith("* "));
       if (active) setCurrentBranch(active.replace(/^\*\s*/, "").trim());
       setCommits(log.stdout.split(/\r?\n/).filter(Boolean));
+      setOriginUrl(origin.ok ? origin.stdout.trim() : "");
       if (showOutput) setGitOutput([status.command, status.stdout, status.stderr].filter(Boolean).join("\n\n"));
     } catch (error: any) {
-      if (showOutput) setGitOutput(error?.message ?? "Could not refresh Git status.");
+      if (showOutput) setGitOutput(error?.message ?? String(error) ?? "Could not refresh Git status.");
+      setGitInitialized(false);
+      onGitRepositoryChange?.(false);
     } finally {
       if (showBusy) setGitBusy(false);
     }
@@ -203,7 +215,6 @@ export default function CodePanel({
     setCommitMessage("");
     setSuggestedCommitMessage("");
     setChangedFilesCount(0);
-    lastSuggestedCommitRef.current = "";
   };
 
   const runCustomGit = async () => {
@@ -215,12 +226,13 @@ export default function CodePanel({
   const publishToGitHub = async () => {
     const name = repoName.trim();
     const token = gitSettings.githubToken.trim();
+    const hasOrigin = originUrl.trim().length > 0;
 
     if (!gitSettings.githubUser || !token) {
       setGithubStatus({ kind: "error", message: "Log in to GitHub in Settings first." });
       return;
     }
-    if (!name) {
+    if (!hasOrigin && !name) {
       setGithubStatus({ kind: "error", message: "Enter a repository name." });
       return;
     }
@@ -233,34 +245,49 @@ export default function CodePanel({
     setGithubStatus({ kind: "idle", message: "" });
 
     try {
-      const res = await fetch("https://api.github.com/user/repos", {
-        method: "POST",
-        headers: {
-          Accept: "application/vnd.github+json",
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-          "X-GitHub-Api-Version": "2022-11-28",
-        },
-        body: JSON.stringify({
-          name,
-          description: repoDescription.trim() || undefined,
-          private: repoPrivate,
-          auto_init: false,
-        }),
-      });
+      let url = originUrl.trim();
+      let htmlUrl = "";
+      let fullName = "";
 
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        const msg = typeof data?.message === "string" ? data.message : `GitHub API error (${res.status})`;
-        throw new Error(msg);
+      if (!url) {
+        const res = await fetch("https://api.github.com/user/repos", {
+          method: "POST",
+          headers: {
+            Accept: "application/vnd.github+json",
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+            "X-GitHub-Api-Version": "2022-11-28",
+          },
+          body: JSON.stringify({
+            name,
+            description: repoDescription.trim() || undefined,
+            private: repoPrivate,
+            auto_init: false,
+          }),
+        });
+
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          const msg = typeof data?.message === "string" ? data.message : `GitHub API error (${res.status})`;
+          throw new Error(msg);
+        }
+
+        url = data.clone_url as string;
+        htmlUrl = data.html_url as string;
+        fullName = data.full_name as string;
+        await runGit(["remote", "add", "origin", url], false);
       }
 
-      await runGit(["remote", "remove", "origin"], false);
-      await runGit(["remote", "add", "origin", data.clone_url as string], false);
       const push = await runGit(["push", "-u", "origin", currentBranch], false);
       if (!push?.ok) throw new Error(push?.stderr || "Push failed.");
 
-      setGithubStatus({ kind: "success", message: `Published as ${data.full_name}`, url: data.html_url as string });
+      setOriginUrl(url);
+      setGithubStatus({
+        kind: "success",
+        message: fullName ? `Published as ${fullName}` : `Pushed ${currentBranch} to origin.`,
+        url: htmlUrl || (url.startsWith("http") ? url.replace(/\.git$/, "") : undefined),
+      });
+      await refreshGit(false, false);
     } catch (error: any) {
       setGithubStatus({ kind: "error", message: error?.message ?? "Could not publish to GitHub." });
     } finally {
@@ -277,7 +304,7 @@ export default function CodePanel({
   }, [gitRepositoryReady]);
 
   useEffect(() => {
-    if (!gitInitialized || !window.electronAPI?.runGit) return;
+    if (!gitInitialized) return;
     setPendingRefresh(true);
     const timeout = window.setTimeout(async () => {
       await refreshGit(false, false);
@@ -292,7 +319,20 @@ export default function CodePanel({
   const hasChanges = gitChanges.length > 0;
 
   return (
-    <div className={`code-panel${isOpen ? "" : " code-panel--collapsed"}`}>
+    <div
+      className={`code-panel${isOpen ? "" : " code-panel--collapsed"}${onResizeStart ? " code-panel--resizable" : ""}`}
+      style={isOpen && width ? { width, flexBasis: width } : undefined}
+    >
+      {isOpen && onResizeStart && (
+        <div
+          className="panel-resize-handle panel-resize-handle--left"
+          onPointerDown={onResizeStart}
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize code panel"
+          title="Resize code panel"
+        />
+      )}
       <div className="code-header workspace-header">
         <button
           className="panelCollapseBtn"
@@ -327,7 +367,16 @@ export default function CodePanel({
 
       {isOpen && activeTab === "prompt" && (
         <div className="code-body prompt-ai-body">
-          <div className="workspace-section-title">Architecture Prompt</div>
+          <div className="prompt-ai-heading">
+            <div className="workspace-section-title">Architecture Prompt</div>
+            <button
+              className="btn"
+              onClick={onGeneratePrompt}
+              disabled={aiGenerating}
+            >
+              Generate Prompt
+            </button>
+          </div>
           <textarea
             className="code-editor"
             value={prompt}
@@ -358,6 +407,30 @@ export default function CodePanel({
               </div>
             </div>
           </div>
+          <section className="ai-agent-card">
+            <div className="ai-agent-header">
+              <div>
+                <span>Code Fix Agent</span>
+                <small>{aiModelLabel ? `Using ${aiModelLabel}` : "Uses the model from Settings"}</small>
+              </div>
+              <button
+                className="btn"
+                onClick={() => void onRunCodeAgent()}
+                disabled={!canRunCodeAgent || codeAgentRunning || aiGenerating}
+              >
+                {codeAgentRunning ? "Checking..." : "Review Code"}
+              </button>
+            </div>
+            <div className="ai-agent-output">
+              {codeAgentOutput ? (
+                <pre>{codeAgentOutput}</pre>
+              ) : (
+                <div className="ai-agent-empty">
+                  Run the agent to inspect the current project files and propose fixes.
+                </div>
+              )}
+            </div>
+          </section>
         </div>
       )}
 
@@ -513,7 +586,7 @@ export default function CodePanel({
                 <div className="git-card-header">
                   <div>
                     <span>Publish to GitHub</span>
-                    <small>Create a remote repo and push in one step</small>
+                    <small>{originUrl ? "Push commits to the existing origin" : "Create a remote repo and push once"}</small>
                   </div>
                   {gitSettings.githubUser && (
                     <div className="git-github-account">
@@ -529,38 +602,60 @@ export default function CodePanel({
                   <div className="workspace-empty">Log in to GitHub in Settings to publish.</div>
                 ) : (
                   <>
-                    <input
-                      className="input"
-                      value={repoName}
-                      onChange={(e) => setRepoName(e.target.value)}
-                      placeholder="Repository name"
-                      disabled={githubBusy}
-                    />
-                    <input
-                      className="input"
-                      value={repoDescription}
-                      onChange={(e) => setRepoDescription(e.target.value)}
-                      placeholder="Description (optional)"
-                      disabled={githubBusy}
-                    />
-                    <label className="github-private-toggle">
-                      <input
-                        type="checkbox"
-                        checked={repoPrivate}
-                        onChange={(e) => setRepoPrivate(e.target.checked)}
-                        disabled={githubBusy}
-                      />
-                      Private repository
-                    </label>
+                    {originUrl ? (
+                      <div className="github-status">
+                        <span>Origin: {originUrl}</span>
+                      </div>
+                    ) : (
+                      <>
+                        <input
+                          className="input"
+                          value={repoName}
+                          onChange={(e) => setRepoName(e.target.value)}
+                          placeholder="Repository name"
+                          disabled={githubBusy}
+                        />
+                        <input
+                          className="input"
+                          value={repoDescription}
+                          onChange={(e) => setRepoDescription(e.target.value)}
+                          placeholder="Description (optional)"
+                          disabled={githubBusy}
+                        />
+                        <label className="github-private-toggle">
+                          <input
+                            type="checkbox"
+                            checked={repoPrivate}
+                            onChange={(e) => setRepoPrivate(e.target.checked)}
+                            disabled={githubBusy}
+                          />
+                          Private repository
+                        </label>
+                      </>
+                    )}
                     <button
                       className="btn btn-primary workspace-wide-btn"
                       onClick={() => void publishToGitHub()}
-                      disabled={githubBusy || !repoName.trim() || commits.length === 0}
+                      disabled={githubBusy || (!originUrl && !repoName.trim()) || commits.length === 0}
                     >
-                      {githubBusy ? "Publishing…" : "Create Repo & Push"}
+                      {githubBusy
+                        ? (originUrl ? "Pushing…" : "Publishing…")
+                        : (originUrl ? "Push to GitHub" : "Create Repo & Push")}
                     </button>
                     {commits.length === 0 && (
-                      <div className="git-publish-hint">Commit your changes first before publishing.</div>
+                      <div className="git-publish-hint">Commit your changes first before pushing.</div>
+                    )}
+                    {originUrl && (
+                      <button
+                        className="btn workspace-wide-btn"
+                        onClick={() => {
+                          setOriginUrl("");
+                          void runGit(["remote", "remove", "origin"], false);
+                        }}
+                        disabled={githubBusy}
+                      >
+                        Change GitHub Repository
+                      </button>
                     )}
                   </>
                 )}

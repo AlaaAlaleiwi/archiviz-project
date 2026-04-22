@@ -215,10 +215,9 @@ export function ProjectConfigModal({
    TOPBAR
 ───────────────────────────────────────── */
 interface TopbarProps {
-  generate: () => void;
-  canGenerate: boolean;
   canSaveProject: boolean;
   hasUnsavedChanges?: boolean;
+  autoSaveLabel?: string;
   importingProject?: boolean;
   javaVersion: JavaVersion;
   setJavaVersion: (v: JavaVersion) => void;
@@ -249,9 +248,8 @@ interface TopbarProps {
 }
 
 export default function Topbar({
-  generate,
-  canGenerate, canSaveProject,
-  hasUnsavedChanges, importingProject,
+  canSaveProject,
+  hasUnsavedChanges, autoSaveLabel, importingProject,
   javaVersion, setJavaVersion,
   springBootVersion, setSpringBootVersion,
   projectName, setProjectName,
@@ -363,6 +361,12 @@ export default function Topbar({
             <span className="topbar-meta-text">Spring Boot {springBootVersion}</span>
             <span className="topbar-meta-sep">·</span>
             <span className="topbar-meta-text">{buildTool}</span>
+            {autoSaveLabel && (
+              <>
+                <span className="topbar-meta-sep">·</span>
+                <span className="topbar-autosave">{autoSaveLabel}</span>
+              </>
+            )}
           </div>
         </div>
 
@@ -372,7 +376,9 @@ export default function Topbar({
             <div className="topbar-repository">
               <div className="topbar-repo-status">
                 <span className={`topbar-repo-dot ${gitRepositoryReady ? "ready" : ""}`} />
-                <span className="topbar-repo-name">{projectName || "untitled"}</span>
+                <span className="topbar-repo-name">
+                  {gitRepositoryReady ? (projectName || "untitled") : "No repository"}
+                </span>
                 {gitRepositoryReady && (
                   <>
                     <span className="topbar-repo-sep">/</span>
@@ -423,10 +429,6 @@ export default function Topbar({
               </button>
             </div>
           )}
-
-          <button className="btn" onClick={generate} disabled={!canGenerate}>
-            Generate Prompt
-          </button>
 
           <button className="btn topbar-icon-btn" onClick={onOpenSettings} title="Settings" aria-label="Settings">
             ⚙

@@ -284,7 +284,7 @@ export class ProjectScaffoldService {
 </project>`;
   }
 
-  private buildGradleKts(groupId: string, artifactId: string, javaVersion: JavaVersion, springVersion: string): string {
+  private buildGradleKts(groupId: string, _artifactId: string, javaVersion: JavaVersion, springVersion: string): string {
     return `plugins {
     java
     id("org.springframework.boot") version "${springVersion}"

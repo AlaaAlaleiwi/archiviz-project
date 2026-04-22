@@ -1,9 +1,22 @@
 import { useState, useEffect } from "react";
 import type { AIProvider, AISettings } from "../services/AIService";
+import {
+  DEFAULT_EDITOR_SETTINGS,
+  DEFAULT_DOCKER_SETTINGS,
+  DEFAULT_GIT_SETTINGS,
+  DEFAULT_TERMINAL_SETTINGS,
+} from "./defaultSettings";
 
 export type { AIProvider, AISettings };
 export type AppTheme = "black" | "red" | "purple" | "green" | "blue";
+export {
+  DEFAULT_EDITOR_SETTINGS,
+  DEFAULT_DOCKER_SETTINGS,
+  DEFAULT_GIT_SETTINGS,
+  DEFAULT_TERMINAL_SETTINGS,
+};
 export type EditorSettings = {
+  theme: "dark" | "light";
   fontFamily: string;
   fontSize: number;
   lineHeight: number;
@@ -92,48 +105,7 @@ const SETTINGS_NAV: { id: SettingsSection; label: string; hint: string }[] = [
   { id: "ai", label: "AI", hint: "Provider and model" },
 ];
 
-export const DEFAULT_EDITOR_SETTINGS: EditorSettings = {
-  fontFamily: "JetBrains Mono, SF Mono, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
-  fontSize: 13,
-  lineHeight: 21,
-  tabSize: 2,
-  wordWrap: "off",
-  minimap: false,
-  lineNumbers: "on",
-  renderWhitespace: "selection",
-  formatOnPaste: true,
-  formatOnType: true,
-  smoothScrolling: true,
-  cursorStyle: "line",
-};
-
-export const DEFAULT_DOCKER_SETTINGS: DockerSettings = {
-  enabled: true,
-  composeEnabled: true,
-  includePostgres: true,
-  includeRedis: true,
-  imageName: "",
-  imageTag: "latest",
-  appPort: 8080,
-  containerPort: 8080,
-  postgresPort: 5432,
-  redisPort: 6379,
-  maxRamPercentage: 75,
-  healthcheckEnabled: true,
-};
-
-export const DEFAULT_GIT_SETTINGS: GitSettings = {
-  githubToken: "",
-  githubUser: null,
-};
-
-export const DEFAULT_TERMINAL_SETTINGS: TerminalSettings = {
-  shell: "",
-  fontSize: 13,
-  fontFamily: '"JetBrains Mono", "SF Mono", SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace',
-  cursorStyle: "bar",
-  cursorBlink: true,
-};
+const GITHUB_TOKEN_URL = "https://github.com/settings/tokens/new?scopes=repo&description=Archiviz%20IDE";
 
 const defaultSettings: AISettings = {
   provider: "openai",
@@ -273,7 +245,7 @@ export default function Settings({
   /* ── Test connection ── */
   const testConnection = async () => {
     if (!cfg.model.trim()) { setError("Select or enter a model first."); return; }
-    if ((cfg.provider === "openai" || cfg.provider === "anthropic") && !cfg.apiKey.trim()) {
+    if ((cfg.provider === "openai" || cfg.provider === "anthropic") && !cfg.apiKey?.trim()) {
       setError("Enter your API key first."); return;
     }
     setTesting(true);
@@ -294,7 +266,7 @@ export default function Settings({
 
   /* ── Fetch OpenAI models ── */
   const fetchOpenAIModels = async () => {
-    if (!cfg.apiKey.trim()) { setError("Enter your API key first."); return; }
+    if (!cfg.apiKey?.trim()) { setError("Enter your API key first."); return; }
     setFetchingModels(true);
     setError(null);
     try {
@@ -321,7 +293,7 @@ export default function Settings({
 
   const save = () => {
     if (!cfg.model.trim()) { setError("Please select or enter a model."); return; }
-    if ((cfg.provider === "openai" || cfg.provider === "anthropic") && !cfg.apiKey.trim()) {
+    if ((cfg.provider === "openai" || cfg.provider === "anthropic") && !cfg.apiKey?.trim()) {
       setError("Please enter your API key."); return;
     }
     localStorage.setItem("ai_settings", JSON.stringify(cfg));
@@ -375,6 +347,11 @@ export default function Settings({
     setGitToken("");
     setGitSettings(DEFAULT_GIT_SETTINGS);
     setGitStatus({ kind: "idle", message: "" });
+  };
+
+  const openGitHubTokenGenerator = async () => {
+    setGitStatus({ kind: "idle", message: "" });
+    window.location.assign(GITHUB_TOKEN_URL);
   };
 
   const openAIModels = fetchedModels.length > 0 ? fetchedModels : OPENAI_MODELS;
@@ -442,6 +419,18 @@ export default function Settings({
             </div>
 
             <div className="settings-form-grid">
+              <label className="settings-field">
+                <span>Theme</span>
+                <select
+                  className="input"
+                  value={editorSettings.theme}
+                  onChange={e => updateEditorSettings({ theme: e.target.value as EditorSettings["theme"] })}
+                >
+                  <option value="dark">Dark</option>
+                  <option value="light">Light</option>
+                </select>
+              </label>
+
               <label className="settings-field settings-field--wide">
                 <span>Font Family</span>
                 <input
@@ -886,7 +875,7 @@ export default function Settings({
               </div>
             ) : (
               <div className="github-login-box">
-                <label className="settings-field">
+                <label className="settings-field settings-field--wide">
                   <span>GitHub Token</span>
                   <input
                     className="input"
@@ -900,13 +889,28 @@ export default function Settings({
                   />
                 </label>
                 <button className="btn btn-primary workspace-wide-btn" onClick={loginToGitHub} disabled={gitTesting}>
-                  {gitTesting ? "Checking..." : "Login to GitHub"}
+                  {gitTesting ? "Checking..." : "Login with Token"}
                 </button>
+
+                <div className="github-token-actions">
+                  <button
+                    type="button"
+                    className="btn workspace-wide-btn github-browser-login-btn"
+                    onClick={() => void openGitHubTokenGenerator()}
+                  >
+                    Generate Token in Browser
+                  </button>
+                  <small style={{ display: "block", marginTop: 8, color: "var(--muted)", textAlign: "center" }}>
+                    Opens GitHub to create a new personal access token
+                  </small>
+                </div>
               </div>
             )}
 
             <div className="settings-note">
               The token is saved locally on this machine so you do not need to log in every time you open a project.
+              <br />
+              <strong>Tip:</strong> Click "Generate Token in Browser" to create a token with the right permissions automatically.
             </div>
 
             {gitStatus.message && (

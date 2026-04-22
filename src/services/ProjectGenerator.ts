@@ -51,7 +51,7 @@ Language: ${language}
 Return only code, no explanation.
       `.trim();
 
-      const raw = await this.ai.call(nodePrompt, signal);
+      const raw = await this.ai.call([{ role: "user", content: nodePrompt }], signal);
 
       files.push({
         path: this.getFilePath(node.name, language),
@@ -69,6 +69,12 @@ Return only code, no explanation.
       python: "py",
       java: "java",
       cpp: "cpp",
+      csharp: "",
+      go: "",
+      ruby: "",
+      php: "",
+      kotlin: "",
+      swift: ""
     };
 
     const ext = extMap[language] ?? "txt";

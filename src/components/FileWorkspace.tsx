@@ -8,6 +8,13 @@ export type WorkspaceFile = {
   content: string;
 };
 
+export type WorkspaceDiagnostic = {
+  path: string;
+  lineNumber?: number;
+  column?: number;
+  message?: string;
+};
+
 type FileTreeNode = {
   name: string;
   path: string;
@@ -26,6 +33,8 @@ type FileWorkspaceProps = {
   onBuildProject?: () => void;
   onRunProject?: () => void;
   runnerBusy?: boolean;
+  errorPaths?: string[];
+  errorDiagnostics?: WorkspaceDiagnostic[];
 };
 
 type FileContextMenu = {
@@ -227,6 +236,7 @@ function FileTree({
   collapsedPaths,
   onToggleFolder,
   onContextMenu,
+  errorPaths,
   filter = "",
 }: {
   node: FileTreeNode;
@@ -236,6 +246,7 @@ function FileTree({
   collapsedPaths: Set<string>;
   onToggleFolder: (path: string) => void;
   onContextMenu: (event: MouseEvent, basePath: string, label: string) => void;
+  errorPaths: Set<string>;
   filter?: string;
 }) {
   const children = sortTreeNodes(Array.from(node.children.values()));
@@ -247,6 +258,7 @@ function FileTree({
       {children.map(child => {
         const isFile = !!child.file;
         const isActive = child.path === activePath;
+        const hasError = isFile && errorPaths.has(child.path);
         const isCollapsed = !isFile && collapsedPaths.has(child.path) && !isFiltering;
         if (isFile && child.file && isFolderPlaceholder(child.file.path)) return null;
         if (!childTreeMatches(child, normalizedFilter)) return null;
@@ -254,7 +266,7 @@ function FileTree({
         return (
           <div key={child.path}>
             <button
-              className={`file-tree-item ${isActive ? "active" : ""} ${isFile ? "file-tree-item--file" : "file-tree-item--folder"} ${isGitFolderPath(child.path) ? "file-tree-item--git" : ""}`}
+              className={`file-tree-item ${isActive ? "active" : ""} ${isFile ? "file-tree-item--file" : "file-tree-item--folder"} ${hasError ? "file-tree-item--error" : ""} ${isGitFolderPath(child.path) ? "file-tree-item--git" : ""}`}
               style={{ paddingLeft: 10 + depth * 14 }}
               onClick={() => isFile ? onSelect(child.path) : onToggleFolder(child.path)}
               onContextMenu={(event) => {
@@ -279,6 +291,7 @@ function FileTree({
                 collapsedPaths={collapsedPaths}
                 onToggleFolder={onToggleFolder}
                 onContextMenu={onContextMenu}
+                errorPaths={errorPaths}
                 filter={filter}
               />
             )}
@@ -300,6 +313,8 @@ export default function FileWorkspace({
   onBuildProject,
   onRunProject,
   runnerBusy = false,
+  errorPaths = [],
+  errorDiagnostics = [],
 }: FileWorkspaceProps) {
   const [openPaths, setOpenPaths] = useState<string[]>([]);
   const [fileSearch, setFileSearch] = useState("");
@@ -310,6 +325,7 @@ export default function FileWorkspace({
   const [newEntryError, setNewEntryError] = useState("");
   const [contextMenu, setContextMenu] = useState<FileContextMenu>(null);
   const editorRef = useRef<any>(null);
+  const monacoRef = useRef<any>(null);
   const pendingNavigationRef = useRef<NavigationTarget | null>(null);
   const activeFileRef = useRef<WorkspaceFile | null>(null);
   const visibleFilesRef = useRef<WorkspaceFile[]>([]);
@@ -326,8 +342,17 @@ export default function FileWorkspace({
     return Array.from(fileTree.children.values()).some(child => childTreeMatches(child, query));
   }, [fileSearch, fileTree]);
   const visibleFiles = useMemo(() => files.filter(file => !isFolderPlaceholder(file.path)), [files]);
+  const errorPathSet = useMemo(
+    () => new Set([...errorPaths, ...errorDiagnostics.map(diagnostic => diagnostic.path)]),
+    [errorPaths, errorDiagnostics]
+  );
   const activeFile = visibleFiles.find(file => file.path === activePath) ?? visibleFiles[0] ?? null;
   const activeFileLines = activeFile?.content ? activeFile.content.split(/\r?\n/).length : 0;
+  const activeFileHasError = !!activeFile && errorPathSet.has(activeFile.path);
+  const activeFileDiagnostics = useMemo(
+    () => activeFile ? errorDiagnostics.filter(diagnostic => diagnostic.path === activeFile.path) : [],
+    [activeFile, errorDiagnostics]
+  );
   const filteredFileCount = useMemo(() => {
     const query = fileSearch.trim().toLowerCase();
     return query ? visibleFiles.filter(file => file.path.toLowerCase().includes(query)).length : visibleFiles.length;
@@ -377,8 +402,9 @@ export default function FileWorkspace({
     return null;
   }, []);
 
-  const handleEditorMount = useCallback((editor: any) => {
+  const handleEditorMount = useCallback((editor: any, monaco: any) => {
     editorRef.current = editor;
+    monacoRef.current = monaco;
 
     editor.onMouseDown((event: any) => {
       const browserEvent = event.event.browserEvent as globalThis.MouseEvent | undefined;
@@ -399,6 +425,31 @@ export default function FileWorkspace({
       openNavigationTarget(target);
     });
   }, [findNavigationTarget, openNavigationTarget]);
+
+  useEffect(() => {
+    const monaco = monacoRef.current;
+    const editor = editorRef.current;
+    const model = editor?.getModel?.();
+    if (!monaco || !model) return;
+
+    const lineCount = model.getLineCount();
+    const markers = activeFileDiagnostics.map(diagnostic => {
+      const lineNumber = Math.min(Math.max(diagnostic.lineNumber || 1, 1), lineCount);
+      const maxColumn = model.getLineMaxColumn(lineNumber);
+      const startColumn = Math.min(Math.max(diagnostic.column || 1, 1), Math.max(maxColumn - 1, 1));
+
+      return {
+        severity: monaco.MarkerSeverity.Error,
+        message: diagnostic.message || "Build error",
+        startLineNumber: lineNumber,
+        startColumn,
+        endLineNumber: lineNumber,
+        endColumn: maxColumn,
+      };
+    });
+
+    monaco.editor.setModelMarkers(model, "archiviz-build", markers);
+  }, [activeFile?.path, activeFileDiagnostics]);
 
   const selectFile = (path: string) => {
     onActivePathChange(path);
@@ -628,6 +679,7 @@ export default function FileWorkspace({
                 collapsedPaths={collapsedPaths}
                 onToggleFolder={toggleFolder}
                 onContextMenu={openContextMenu}
+                errorPaths={errorPathSet}
                 filter={fileSearch}
               />
             ) : (
@@ -662,7 +714,7 @@ export default function FileWorkspace({
           <>
             <div className="workspace-editor-bar">
               <div className="workspace-file-heading">
-                <span className="workspace-file-name">{basename(activeFile.path)}</span>
+                <span className={`workspace-file-name ${activeFileHasError ? "workspace-file-name--error" : ""}`}>{basename(activeFile.path)}</span>
                 <span className="workspace-file-folder">{getFolderName(activeFile.path)}</span>
               </div>
               <div className="workspace-file-actions">
@@ -682,7 +734,7 @@ export default function FileWorkspace({
               {openPaths.map(path => (
                 <button
                   key={path}
-                  className={`editor-tab ${path === activeFile.path ? "active" : ""}`}
+                  className={`editor-tab ${path === activeFile.path ? "active" : ""} ${errorPathSet.has(path) ? "editor-tab--error" : ""}`}
                   onClick={() => onActivePathChange(path)}
                   title={path}
                   role="tab"

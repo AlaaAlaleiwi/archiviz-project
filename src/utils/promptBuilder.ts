@@ -294,15 +294,18 @@ function testingContext(javaVersion: JavaVersion): string {
 
 export function buildAIPrompt(
   graph: Graph,
-  javaVersion: JavaVersion,
-  springBootVersion: SpringBootVersion,
+  language: string,
+  framework: string,
   projectName: string,
 ): string {
-  const summary  = buildArchitectureSummary(graph);
-  const sbCtx    = springBootContext(javaVersion, springBootVersion);
-  const testCtx  = testingContext(javaVersion);
+  if (language === "java") {
+    const javaVersion: JavaVersion = "17"; // default
+    const springBootVersion: SpringBootVersion = framework as SpringBootVersion || "3.2";
+    const summary  = buildArchitectureSummary(graph);
+    const sbCtx    = springBootContext(javaVersion, springBootVersion);
+    const testCtx  = testingContext(javaVersion);
 
-  return `You are a senior Java ${javaVersion} engineer specialising in Spring Boot ${springBootVersion}.
+    return `You are a senior Java ${javaVersion} engineer specialising in Spring Boot ${springBootVersion}.
 Your code is production-grade: clean, tested, secure, idiomatic, and fully implemented.
 
 # Project: ${projectName}
@@ -325,6 +328,30 @@ ${testCtx}
 - No placeholder TODO comments — write real, working implementations.
 - All code must compile with zero errors on Java ${javaVersion} with Spring Boot ${springBootVersion}.
 - Follow the exact package paths shown in each file header.`.trim();
+  } else {
+    const summary = buildArchitectureSummary(graph);
+    return `You are a senior ${language} engineer specialising in ${framework}.
+Your code is production-grade: clean, tested, secure, idiomatic, and fully implemented.
+
+# Project: ${projectName}
+Language: ${language}  |  Framework: ${framework}
+
+## System architecture
+
+Components:
+${summary.components}
+
+Relationships:
+${summary.relationships}
+
+## Global output rules
+- Output ONLY raw source code — no markdown fences, no prose, no explanatory text outside code.
+- Every file MUST start with exactly: === FILE: <path/as/shown/below> ===
+- Implement EVERY file listed — do not skip tests.
+- No placeholder TODO comments — write real, working implementations.
+- All code must compile with zero errors.
+- Follow best practices for ${language}.`.trim();
+  }
 }
 
 // ─── Node implementation prompt ───────────────────────────────────────────────
@@ -337,7 +364,7 @@ export function buildNodeImplementationPrompt(
   projectName: string,
   buildTool: BuildTool = "maven",
 ): string {
-  const base       = buildAIPrompt(graph, javaVersion, springBootVersion, projectName);
+  const base       = buildAIPrompt(graph, "java", springBootVersion, projectName);
   const rel        = buildNodeRelationships(graph, node);
   const specs      = getFileSpecs(node, javaVersion, springBootVersion, projectName, buildTool);
   const implSpecs  = specs.filter(s => !s.isTest);
@@ -400,7 +427,7 @@ export function buildFullProjectPrompt(
 ): string {
   const pkg      = sanitizePkg(projectName);
   const buildFile = buildTool === "maven" ? "pom.xml" : "build.gradle.kts";
-  const base = buildAIPrompt(graph, javaVersion, springBootVersion, projectName);
+  const base = buildAIPrompt(graph, "java", springBootVersion, projectName);
   return `${base}
 
 ---
