@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import "../styles.css";
+import { analyzeSourceFile, isSourceFile } from "../utils/fileAnalysis";
 
 type Item = {
   type: string;
@@ -12,6 +13,44 @@ type WorkspaceFile = {
   path: string;
   content: string;
 };
+
+// ── Imported-project file analysis ──────────────────────────────────────────
+
+type ImportedFileItem = {
+  path: string;
+  displayName: string;
+  nodeType: string;
+  roleLabel: string;
+  icon: string;
+};
+
+const ROLE_LABELS: Record<string, string> = {
+  controller: "Controller",
+  service: "Service",
+  repository: "Repository",
+  entity: "Entity",
+  config: "Config",
+  client: "Client",
+  component: "Component",
+  module: "Module",
+};
+
+function buildImportedItems(workspaceFiles: WorkspaceFile[]): ImportedFileItem[] {
+  return workspaceFiles
+    .filter((f) => isSourceFile(f.path))
+    .map((f) => {
+      const a = analyzeSourceFile(f.path, f.content);
+      return {
+        path: f.path,
+        displayName: a.displayName,
+        nodeType: a.nodeType,
+        roleLabel: ROLE_LABELS[a.role] ?? "File",
+        icon: a.icon,
+      };
+    });
+}
+
+const DRAG_THRESHOLD_PX = 4;
 
 const catalog: Item[] = [
   { type: "api",                 label: "API Service",           icon: "⚡",  desc: "REST endpoints and business logic" },
@@ -57,19 +96,35 @@ const filesForType = (type: string, files: WorkspaceFile[]): WorkspaceFile[] => 
   });
 };
 
-type PaletteTab = "all" | "implemented";
+type PaletteTab = "all" | "implemented" | "project";
 
 type PaletteProps = {
   embedded?: boolean;
   workspaceFiles?: WorkspaceFile[];
+  onDropNode?: (type: string, clientX: number, clientY: number, name?: string) => boolean;
 };
 
-export default function Palette({ embedded = false, workspaceFiles = [] }: PaletteProps) {
+type PaletteDragState = {
+  item: Item;
+  nameOverride?: string;
+  pointerId: number;
+  originX: number;
+  originY: number;
+  x: number;
+  y: number;
+  active: boolean;
+};
+
+export default function Palette({ embedded = false, workspaceFiles = [], onDropNode }: PaletteProps) {
   const [isOpen, setIsOpen] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
   const [activeTab, setActiveTab] = useState<PaletteTab>("all");
   const [newItem, setNewItem] = useState({ label: "", icon: "⚙️", desc: "" });
   const [customItems, setCustomItems] = useState<Item[]>([]);
+  const [dragState, setDragState] = useState<PaletteDragState | null>(null);
+  const dragStateRef = useRef<PaletteDragState | null>(null);
+
+  const importedItems = useMemo(() => buildImportedItems(workspaceFiles), [workspaceFiles]);
 
   const allItems = [...catalog, ...customItems];
 
@@ -105,6 +160,95 @@ export default function Palette({ embedded = false, workspaceFiles = [] }: Palet
     }]);
     setNewItem({ label: "", icon: "⚙️", desc: "" });
   };
+
+  useEffect(() => {
+    dragStateRef.current = dragState;
+  }, [dragState]);
+
+  useEffect(() => {
+    if (!dragState) return;
+
+    const handlePointerMove = (event: PointerEvent) => {
+      setDragState(current => {
+        if (!current || current.pointerId !== event.pointerId) return current;
+
+        const dx = event.clientX - current.originX;
+        const dy = event.clientY - current.originY;
+        const active = current.active || dx * dx + dy * dy >= DRAG_THRESHOLD_PX * DRAG_THRESHOLD_PX;
+
+        return {
+          ...current,
+          x: event.clientX,
+          y: event.clientY,
+          active,
+        };
+      });
+    };
+
+    const finishDrag = (event: PointerEvent) => {
+      const current = dragStateRef.current;
+      if (!current || current.pointerId !== event.pointerId) return;
+
+      if (current.active) {
+        onDropNode?.(current.item.type, event.clientX, event.clientY, current.nameOverride);
+      }
+
+      setDragState(null);
+    };
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", finishDrag);
+    window.addEventListener("pointercancel", finishDrag);
+
+    return () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", finishDrag);
+      window.removeEventListener("pointercancel", finishDrag);
+    };
+  }, [dragState?.pointerId, onDropNode]);
+
+  const startNodeDrag = (event: ReactPointerEvent<HTMLDivElement>, item: Item) => {
+    if (event.button !== 0) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    setDragState({
+      item,
+      pointerId: event.pointerId,
+      originX: event.clientX,
+      originY: event.clientY,
+      x: event.clientX,
+      y: event.clientY,
+      active: false,
+    });
+  };
+
+  const startImportedFileDrag = (event: ReactPointerEvent<HTMLDivElement>, fileItem: ImportedFileItem) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setDragState({
+      item: { type: fileItem.nodeType, label: fileItem.displayName, icon: fileItem.icon, desc: fileItem.path },
+      nameOverride: fileItem.displayName,
+      pointerId: event.pointerId,
+      originX: event.clientX,
+      originY: event.clientY,
+      x: event.clientX,
+      y: event.clientY,
+      active: false,
+    });
+  };
+
+  const importedGroups = useMemo(() => {
+    const map = new Map<string, ImportedFileItem[]>();
+    for (const item of importedItems) {
+      const group = map.get(item.roleLabel) ?? [];
+      group.push(item);
+      map.set(item.roleLabel, group);
+    }
+    return map;
+  }, [importedItems]);
 
   return (
     <div className={`palette${embedded ? " palette--embedded" : ""}${isOpen ? "" : " palette--collapsed"}`}>
@@ -146,6 +290,15 @@ export default function Palette({ embedded = false, workspaceFiles = [] }: Palet
               In Editor
               <span className="paletteTabCount">{implementedCount}</span>
             </button>
+            {importedItems.length > 0 && (
+              <button
+                className={`paletteTab ${activeTab === "project" ? "active" : ""}`}
+                onClick={() => setActiveTab("project")}
+              >
+                Project
+                <span className="paletteTabCount">{importedItems.length}</span>
+              </button>
+            )}
           </div>
 
           {activeTab === "all" && (
@@ -177,38 +330,78 @@ export default function Palette({ embedded = false, workspaceFiles = [] }: Palet
             </div>
           )}
 
-          <div className="paletteList">
-            {filteredItems.length > 0 ? (
-              filteredItems.map((item) => {
-                const matchedFiles = filesForType(item.type, workspaceFiles);
-                const isImplemented = matchedFiles.length > 0;
-                return (
-                  <div
-                    key={item.type}
-                    draggable
-                    onDragStart={(e) => e.dataTransfer.setData("type", item.type)}
-                    className={`paletteItem${isImplemented ? " paletteItem--implemented" : ""}`}
-                  >
-                    <div className="paletteIcon">{item.icon}</div>
-                    <div className="paletteText">
-                      <div className="paletteTitle">
-                        {item.label}
-                        {isImplemented && (
-                          <span className="paletteItemFileBadge" title={`${matchedFiles.length} file${matchedFiles.length !== 1 ? "s" : ""} in editor`}>
-                            {matchedFiles.length}
-                          </span>
-                        )}
+          {activeTab !== "project" && (
+            <div className="paletteList">
+              {filteredItems.length > 0 ? (
+                filteredItems.map((item) => {
+                  const matchedFiles = filesForType(item.type, workspaceFiles);
+                  const isImplemented = matchedFiles.length > 0;
+                  return (
+                    <div
+                      key={item.type}
+                      onPointerDown={(event) => startNodeDrag(event, item)}
+                      className={`paletteItem${isImplemented ? " paletteItem--implemented" : ""}`}
+                    >
+                      <div className="paletteIcon">{item.icon}</div>
+                      <div className="paletteText">
+                        <div className="paletteTitle">
+                          {item.label}
+                          {isImplemented && (
+                            <span className="paletteItemFileBadge" title={`${matchedFiles.length} file${matchedFiles.length !== 1 ? "s" : ""} in editor`}>
+                              {matchedFiles.length}
+                            </span>
+                          )}
+                        </div>
+                        <div className="paletteSub">{item.desc}</div>
                       </div>
-                      <div className="paletteSub">{item.desc}</div>
+                      <div className="paletteHint">{isImplemented ? "✓" : "↗"}</div>
                     </div>
-                    <div className="paletteHint">{isImplemented ? "✓" : "↗"}</div>
+                  );
+                })
+              ) : (
+                <div className="paletteEmpty">No components match that search.</div>
+              )}
+            </div>
+          )}
+
+          {activeTab === "project" && (
+            <div className="paletteProjectFiles">
+              {importedGroups.size === 0 ? (
+                <div className="paletteEmpty">No source files found in the imported project.</div>
+              ) : (
+                [...importedGroups.entries()].map(([role, items]) => (
+                  <div key={role} className="paletteProjectGroup">
+                    <div className="paletteSectionTitle">{role}s</div>
+                    {items.map((fileItem) => (
+                      <div
+                        key={fileItem.path}
+                        className="paletteItem paletteItem--file"
+                        onPointerDown={(e) => startImportedFileDrag(e, fileItem)}
+                        title={fileItem.path}
+                      >
+                        <div className="paletteIcon">{fileItem.icon}</div>
+                        <div className="paletteText">
+                          <div className="paletteTitle">{fileItem.displayName}</div>
+                          <div className="paletteSub">{fileItem.path.split("/").slice(-2).join("/")}</div>
+                        </div>
+                        <div className="paletteHint">↗</div>
+                      </div>
+                    ))}
                   </div>
-                );
-              })
-            ) : (
-              <div className="paletteEmpty">No components match that search.</div>
-            )}
-          </div>
+                ))
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {dragState?.active && (
+        <div
+          className="paletteDragPreview"
+          style={{ left: dragState.x, top: dragState.y }}
+        >
+          <span className="paletteDragPreviewIcon">{dragState.item.icon}</span>
+          <span className="paletteDragPreviewLabel">{dragState.item.label}</span>
         </div>
       )}
     </div>

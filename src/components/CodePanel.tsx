@@ -223,21 +223,16 @@ export default function CodePanel({
     await runGit(args);
   };
 
-  const publishToGitHub = async () => {
+  const createGitHubRepo = async () => {
     const name = repoName.trim();
     const token = gitSettings.githubToken.trim();
-    const hasOrigin = originUrl.trim().length > 0;
 
     if (!gitSettings.githubUser || !token) {
       setGithubStatus({ kind: "error", message: "Log in to GitHub in Settings first." });
       return;
     }
-    if (!hasOrigin && !name) {
+    if (!name) {
       setGithubStatus({ kind: "error", message: "Enter a repository name." });
-      return;
-    }
-    if (commits.length === 0) {
-      setGithubStatus({ kind: "error", message: "Make at least one commit before publishing." });
       return;
     }
 
@@ -245,58 +240,92 @@ export default function CodePanel({
     setGithubStatus({ kind: "idle", message: "" });
 
     try {
-      let url = originUrl.trim();
-      let htmlUrl = "";
-      let fullName = "";
+      const res = await fetch("https://api.github.com/user/repos", {
+        method: "POST",
+        headers: {
+          Accept: "application/vnd.github+json",
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+          "X-GitHub-Api-Version": "2022-11-28",
+        },
+        body: JSON.stringify({
+          name,
+          description: repoDescription.trim() || undefined,
+          private: repoPrivate,
+          auto_init: false,
+        }),
+      });
 
-      if (!url) {
-        const res = await fetch("https://api.github.com/user/repos", {
-          method: "POST",
-          headers: {
-            Accept: "application/vnd.github+json",
-            Authorization: `Bearer ${token}`,
-            "Content-Type": "application/json",
-            "X-GitHub-Api-Version": "2022-11-28",
-          },
-          body: JSON.stringify({
-            name,
-            description: repoDescription.trim() || undefined,
-            private: repoPrivate,
-            auto_init: false,
-          }),
-        });
-
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) {
-          const msg = typeof data?.message === "string" ? data.message : `GitHub API error (${res.status})`;
-          throw new Error(msg);
-        }
-
-        url = data.clone_url as string;
-        htmlUrl = data.html_url as string;
-        fullName = data.full_name as string;
-        await runGit(["remote", "add", "origin", url], false);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const msg = typeof data?.message === "string" ? data.message : `GitHub API error (${res.status})`;
+        throw new Error(msg);
       }
 
-      const push = await runGit(["push", "-u", "origin", currentBranch], false);
-      if (!push?.ok) throw new Error(push?.stderr || "Push failed.");
+      const url = data.clone_url as string;
+      const htmlUrl = data.html_url as string;
+      const fullName = data.full_name as string;
+      const remote = await runGit(["remote", "add", "origin", url], false);
+
+      if (!remote?.ok) {
+        const fallback = await runGit(["remote", "set-url", "origin", url], false);
+        if (!fallback?.ok) throw new Error(fallback?.stderr || remote?.stderr || "Could not link the GitHub repository.");
+      }
 
       setOriginUrl(url);
       setGithubStatus({
         kind: "success",
-        message: fullName ? `Published as ${fullName}` : `Pushed ${currentBranch} to origin.`,
+        message: `Created ${fullName || name}. Commit your changes, then push when ready.`,
         url: htmlUrl || (url.startsWith("http") ? url.replace(/\.git$/, "") : undefined),
       });
       await refreshGit(false, false);
     } catch (error: any) {
-      setGithubStatus({ kind: "error", message: error?.message ?? "Could not publish to GitHub." });
+      setGithubStatus({ kind: "error", message: error?.message ?? "Could not create the GitHub repository." });
+    } finally {
+      setGithubBusy(false);
+    }
+  };
+
+  const pushToGitHub = async () => {
+    const token = gitSettings.githubToken.trim();
+    const url = originUrl.trim();
+
+    if (!gitSettings.githubUser || !token) {
+      setGithubStatus({ kind: "error", message: "Log in to GitHub in Settings first." });
+      return;
+    }
+    if (!url) {
+      setGithubStatus({ kind: "error", message: "Create or link a GitHub repository first." });
+      return;
+    }
+    if (commits.length === 0) {
+      setGithubStatus({ kind: "error", message: "Make at least one commit before pushing." });
+      return;
+    }
+
+    setGithubBusy(true);
+    setGithubStatus({ kind: "idle", message: "" });
+
+    try {
+      const push = await runGit(["push", "-u", "origin", currentBranch], false);
+      if (!push?.ok) throw new Error(push?.stderr || "Push failed.");
+
+      setGithubStatus({
+        kind: "success",
+        message: `Pushed ${currentBranch} to origin.`,
+        url: url.startsWith("http") ? url.replace(/\.git$/, "") : undefined,
+      });
+      await refreshGit(false, false);
+    } catch (error: any) {
+      setGithubStatus({ kind: "error", message: error?.message ?? "Could not push to GitHub." });
     } finally {
       setGithubBusy(false);
     }
   };
 
   useEffect(() => {
-    setRepoName(prev => prev || projectName);
+    setRepoName(projectName);
+    setGithubStatus({ kind: "idle", message: "" });
   }, [projectName]);
 
   useEffect(() => {
@@ -317,6 +346,7 @@ export default function CodePanel({
   }, [filesSignature, gitInitialized]);
 
   const hasChanges = gitChanges.length > 0;
+  const hasOrigin = originUrl.trim().length > 0;
 
   return (
     <div
@@ -520,6 +550,72 @@ export default function CodePanel({
                 </section>
               )}
 
+              {/* ── Create remote ── */}
+              {!hasOrigin && (
+                <section className="git-card">
+                  <div className="git-card-header">
+                    <div>
+                      <span>Create GitHub Repository</span>
+                      <small>Create the remote for this service before committing.</small>
+                    </div>
+                    {gitSettings.githubUser && (
+                      <div className="git-github-account">
+                        {gitSettings.githubUser.avatar_url && (
+                          <img className="github-avatar" src={gitSettings.githubUser.avatar_url} alt="" />
+                        )}
+                        <span>{gitSettings.githubUser.login}</span>
+                      </div>
+                    )}
+                  </div>
+
+                  {!gitSettings.githubUser ? (
+                    <div className="workspace-empty">Log in to GitHub in Settings to create a repo.</div>
+                  ) : (
+                    <>
+                      <input
+                        className="input"
+                        value={repoName}
+                        onChange={(e) => setRepoName(e.target.value)}
+                        placeholder="Repository name"
+                        disabled={githubBusy}
+                      />
+                      <input
+                        className="input"
+                        value={repoDescription}
+                        onChange={(e) => setRepoDescription(e.target.value)}
+                        placeholder="Description (optional)"
+                        disabled={githubBusy}
+                      />
+                      <label className="github-private-toggle">
+                        <input
+                          type="checkbox"
+                          checked={repoPrivate}
+                          onChange={(e) => setRepoPrivate(e.target.checked)}
+                          disabled={githubBusy}
+                        />
+                        Private repository
+                      </label>
+                      <button
+                        className="btn btn-primary workspace-wide-btn"
+                        onClick={() => void createGitHubRepo()}
+                        disabled={githubBusy || !repoName.trim()}
+                      >
+                        {githubBusy ? "Creating..." : "Create Repository"}
+                      </button>
+                    </>
+                  )}
+
+                  {githubStatus.message && (
+                    <div className={`github-status github-status--${githubStatus.kind}`}>
+                      <span>{githubStatus.message}</span>
+                      {githubStatus.url && (
+                        <a href={githubStatus.url} target="_blank" rel="noreferrer">Open on GitHub</a>
+                      )}
+                    </div>
+                  )}
+                </section>
+              )}
+
               {/* ── Commit ── */}
               <section className="git-card">
                 <div className="git-card-header">
@@ -581,94 +677,66 @@ export default function CodePanel({
                 </section>
               )}
 
-              {/* ── Publish to GitHub ── */}
-              <section className="git-card">
-                <div className="git-card-header">
-                  <div>
-                    <span>Publish to GitHub</span>
-                    <small>{originUrl ? "Push commits to the existing origin" : "Create a remote repo and push once"}</small>
-                  </div>
-                  {gitSettings.githubUser && (
-                    <div className="git-github-account">
-                      {gitSettings.githubUser.avatar_url && (
-                        <img className="github-avatar" src={gitSettings.githubUser.avatar_url} alt="" />
-                      )}
-                      <span>{gitSettings.githubUser.login}</span>
+              {/* ── Push to GitHub ── */}
+              {hasOrigin && (
+                <section className="git-card">
+                  <div className="git-card-header">
+                    <div>
+                      <span>Push to GitHub</span>
+                      <small>Push commits to this service repository.</small>
                     </div>
-                  )}
-                </div>
-
-                {!gitSettings.githubUser ? (
-                  <div className="workspace-empty">Log in to GitHub in Settings to publish.</div>
-                ) : (
-                  <>
-                    {originUrl ? (
-                      <div className="github-status">
-                        <span>Origin: {originUrl}</span>
+                    {gitSettings.githubUser && (
+                      <div className="git-github-account">
+                        {gitSettings.githubUser.avatar_url && (
+                          <img className="github-avatar" src={gitSettings.githubUser.avatar_url} alt="" />
+                        )}
+                        <span>{gitSettings.githubUser.login}</span>
                       </div>
-                    ) : (
-                      <>
-                        <input
-                          className="input"
-                          value={repoName}
-                          onChange={(e) => setRepoName(e.target.value)}
-                          placeholder="Repository name"
-                          disabled={githubBusy}
-                        />
-                        <input
-                          className="input"
-                          value={repoDescription}
-                          onChange={(e) => setRepoDescription(e.target.value)}
-                          placeholder="Description (optional)"
-                          disabled={githubBusy}
-                        />
-                        <label className="github-private-toggle">
-                          <input
-                            type="checkbox"
-                            checked={repoPrivate}
-                            onChange={(e) => setRepoPrivate(e.target.checked)}
-                            disabled={githubBusy}
-                          />
-                          Private repository
-                        </label>
-                      </>
                     )}
-                    <button
-                      className="btn btn-primary workspace-wide-btn"
-                      onClick={() => void publishToGitHub()}
-                      disabled={githubBusy || (!originUrl && !repoName.trim()) || commits.length === 0}
-                    >
-                      {githubBusy
-                        ? (originUrl ? "Pushing…" : "Publishing…")
-                        : (originUrl ? "Push to GitHub" : "Create Repo & Push")}
-                    </button>
-                    {commits.length === 0 && (
-                      <div className="git-publish-hint">Commit your changes first before pushing.</div>
-                    )}
-                    {originUrl && (
+                  </div>
+
+                  <div className="github-status">
+                    <span>Origin: {originUrl}</span>
+                  </div>
+
+                  {!gitSettings.githubUser ? (
+                    <div className="workspace-empty">Log in to GitHub in Settings to push.</div>
+                  ) : (
+                    <>
+                      <button
+                        className="btn btn-primary workspace-wide-btn"
+                        onClick={() => void pushToGitHub()}
+                        disabled={githubBusy || commits.length === 0}
+                      >
+                        {githubBusy ? "Pushing..." : "Push to GitHub"}
+                      </button>
+                      {commits.length === 0 && (
+                        <div className="git-publish-hint">Commit your changes first before pushing.</div>
+                      )}
                       <button
                         className="btn workspace-wide-btn"
                         onClick={() => {
                           setOriginUrl("");
+                          setGithubStatus({ kind: "idle", message: "" });
                           void runGit(["remote", "remove", "origin"], false);
                         }}
                         disabled={githubBusy}
                       >
                         Change GitHub Repository
                       </button>
-                    )}
-                  </>
-                )}
+                    </>
+                  )}
 
-                {githubStatus.message && (
-                  <div className={`github-status github-status--${githubStatus.kind}`}>
-                    <span>{githubStatus.message}</span>
-                    {githubStatus.url && (
-                      <a href={githubStatus.url} target="_blank" rel="noreferrer">Open on GitHub</a>
-                    )}
-                  </div>
-                )}
-              </section>
+                  {githubStatus.message && (
+                    <div className={`github-status github-status--${githubStatus.kind}`}>
+                      <span>{githubStatus.message}</span>
+                      {githubStatus.url && (
+                        <a href={githubStatus.url} target="_blank" rel="noreferrer">Open on GitHub</a>
+                      )}
+                    </div>
+                  )}
+                </section>
+              )}
 
               {/* ── Terminal ── */}
               <section className="git-card git-card--wide">

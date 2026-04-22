@@ -3,6 +3,15 @@ import { getComponentConfig, formatConfigForPrompt } from "./componentConfigs";
 import { getCodeScaffold } from "./codeScaffolds";
 import type { ClassRole } from "./classMap";
 
+export type PromptContextFile = {
+  path: string;
+  content: string;
+};
+
+export type PromptBuildOptions = {
+  existingFiles?: PromptContextFile[];
+};
+
 // ─── String helpers ───────────────────────────────────────────────────────────
 
 function sanitizePkg(value: string) {
@@ -31,6 +40,14 @@ function formatList(items: string[]) {
   return items.length ? items.map(i => `- ${i}`).join("\n") : "- None";
 }
 
+function compact(value: string) {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+function truncate(value: string, max = 2400) {
+  return value.length > max ? `${value.slice(0, max)}\n/* ...truncated... */` : value;
+}
+
 export function sanitizeFileName(value: string) {
   return toPascal(value) || "Component";
 }
@@ -49,6 +66,119 @@ function buildArchitectureSummary(graph: Graph) {
       graph.edges.map(e => `${m.get(e.from)?.name ?? e.from} → ${m.get(e.to)?.name ?? e.to}`)
     ),
   };
+}
+
+function getNodeLabelMap(graph: Graph) {
+  return new Map(graph.nodes.map((node, index) => [node.id, `C${String(index + 1).padStart(2, "0")}`]));
+}
+
+function buildComponentBlueprint(graph: Graph) {
+  const labels = getNodeLabelMap(graph);
+
+  return formatList(graph.nodes.map(node => {
+    const configSchema = getComponentConfig(node.type);
+    const config = configSchema && node.config && Object.keys(node.config).length > 0
+      ? compact(formatConfigForPrompt(configSchema, node.config))
+      : "default sensible configuration";
+
+    return [
+      `${labels.get(node.id)} ${node.name}`,
+      `type=${node.type}`,
+      `module=${toSnake(node.name).replace(/_/g, "")}`,
+      `route=/api/${toKebab(node.name)}`,
+      `config=${config}`,
+    ].join(" | ");
+  }));
+}
+
+function buildRelationshipBlueprint(graph: Graph) {
+  const nodes = buildNodeMap(graph);
+  const labels = getNodeLabelMap(graph);
+
+  return formatList(graph.edges.map(edge => {
+    const from = nodes.get(edge.from);
+    const to = nodes.get(edge.to);
+    const fromName = from ? `${labels.get(from.id)} ${from.name}` : edge.from;
+    const toName = to ? `${labels.get(to.id)} ${to.name}` : edge.to;
+
+    return `${fromName} -> ${toName} | integration=typed service/client/event boundary | reason=inferred from architecture edge`;
+  }));
+}
+
+function findNodeFiles(node: NodeData, files: PromptContextFile[]) {
+  const candidates = [
+    toSnake(node.name).replace(/_/g, ""),
+    toKebab(node.name).replace(/-/g, ""),
+    node.type.replace(/_/g, ""),
+  ].filter(part => part.length >= 3);
+
+  return files.filter(file => {
+    const normalizedPath = file.path.toLowerCase().replace(/[^a-z0-9]+/g, "");
+    return candidates.some(candidate => normalizedPath.includes(candidate.toLowerCase()));
+  });
+}
+
+function buildIncrementalUpdateSection(graph: Graph, files: PromptContextFile[]) {
+  if (files.length === 0) return "";
+
+  const nodesWithCode = graph.nodes
+    .map(node => ({ node, files: findNodeFiles(node, files) }))
+    .filter(entry => entry.files.length > 0);
+
+  const nodesWithoutCode = graph.nodes
+    .filter(node => !nodesWithCode.some(entry => entry.node.id === node.id));
+
+  const nodes = buildNodeMap(graph);
+  const integrationEdges = graph.edges.filter(edge => {
+    const fromHasCode = nodesWithCode.some(entry => entry.node.id === edge.from);
+    const toHasCode = nodesWithCode.some(entry => entry.node.id === edge.to);
+    return fromHasCode || toHasCode;
+  });
+
+  const existingSummary = nodesWithCode.map(entry => {
+    const fileList = entry.files.slice(0, 8).map(file => file.path).join(", ");
+    return `- ${entry.node.name} (${entry.node.type}) already has code: ${fileList}`;
+  });
+
+  const newSummary = nodesWithoutCode.map(node => `- ${node.name} (${node.type}) appears new or has no generated files yet.`);
+
+  const integrationSummary = integrationEdges.map(edge => {
+    const from = nodes.get(edge.from);
+    const to = nodes.get(edge.to);
+    return `- Update integration: ${from?.name ?? edge.from} -> ${to?.name ?? edge.to}`;
+  });
+
+  const representativeFiles = nodesWithCode
+    .flatMap(entry => entry.files.slice(0, 4))
+    .slice(0, 18)
+    .map(file => `=== EXISTING FILE: ${file.path} ===\n${truncate(file.content)}`)
+    .join("\n\n");
+
+  return `
+# Incremental Update Mode
+Existing code is present. Do not regenerate the whole project or rewrite existing services from scratch.
+
+## Existing generated services/files
+${formatList(existingSummary)}
+
+## New or missing services
+${formatList(newSummary)}
+
+## Required integration updates
+${formatList(integrationSummary)}
+
+## Incremental rules
+- Preserve existing package names, public APIs, DTOs, persistence mappings, tests, and behavior unless a graph relationship requires a targeted change.
+- If a new service was added to the canvas, generate only the files for the new service plus minimal changes to existing services that must call or depend on it.
+- For an existing service connected to a newly added service, update the current service in place: add constructor-injected client/service dependency, adapter, DTO mapping, configuration, and focused tests.
+- Do not ask to recreate or regenerate already generated services from scratch.
+- Return only changed or newly required files, each with the exact === FILE: path === marker.
+- When editing an existing file, output the complete updated file content for that file.
+- Keep unchanged existing files out of the response.
+
+## Existing code excerpts for context
+${representativeFiles || "- Existing code is available in the workspace, but no matching excerpts were selected."}
+`.trim();
 }
 
 function buildNodeRelationships(graph: Graph, node: NodeData) {
@@ -73,6 +203,13 @@ export type FileSpec = {
   role: ClassRole | "test" | "dto" | "module" | "schema" | "interface";
   description: string;
   isTest: boolean;
+};
+
+export type ServiceGenerationPrompt = {
+  nodeId: string;
+  serviceName: string;
+  serviceRoot: string;
+  prompt: string;
 };
 
 // ─── Java / Spring Boot file layout ──────────────────────────────────────────
@@ -252,20 +389,21 @@ export function getGeneratedFilePath(node: NodeData, projectName: string): strin
 
 // ─── Spring Boot context blocks ────────────────────────────────────────────────
 
-function springBootContext(javaVersion: JavaVersion, springBootVersion: SpringBootVersion): string {
+function springBootContext(javaVersion: JavaVersion, springBootVersion: SpringBootVersion, buildTool: BuildTool): string {
   return `
 ## Spring Boot ${springBootVersion} conventions (Java ${javaVersion})
-- Annotations: @RestController, @Service, @Repository, @Entity, @Transactional
-- Constructor injection only — never @Autowired on fields (use @RequiredArgsConstructor from Lombok)
-- Lombok: @RequiredArgsConstructor, @Data, @Builder, @Getter, @Setter, @Slf4j
-- DTOs for ALL API boundaries — never serialize @Entity directly to JSON
-- Validation: @Valid on controller params; @NotBlank / @Email / @Positive / @Size on DTO fields
-- Exception handling: @RestControllerAdvice + @ExceptionHandler; return ProblemDetail (RFC 9457)
-- Flyway migrations in src/main/resources/db/migration/V{n}__{description}.sql
-- Swagger / OpenAPI via springdoc-openapi: @Operation, @ApiResponse, @Tag on controllers
-- Security: Spring Security with JWT filter chain (stateless); BCryptPasswordEncoder for passwords
-- Use Java ${javaVersion >= "21" ? "records for simple DTOs where immutability is desired" : "classes with Lombok for DTOs"}
-- Package structure: com.<project>.<module>.{controller,service,repository,entity,dto,exception}`;
+- Build system: ${buildTool === "maven" ? "Maven with pom.xml" : "Gradle Kotlin DSL with build.gradle.kts"}
+- Use one cohesive Spring Boot application, not disconnected snippets.
+- Package root: com.<sanitized-project-name>; packages by feature/module.
+- Controllers: @RestController, versioned REST routes, DTOs only, @Valid request bodies.
+- Services: interfaces plus @Service implementations; constructor injection only.
+- Persistence: Spring Data JPA repositories, entities with UUID ids, Flyway migrations.
+- Validation: Bean Validation annotations on DTOs; meaningful validation errors.
+- Error handling: one @RestControllerAdvice returning ProblemDetail responses.
+- Observability: actuator health/info/metrics, useful structured logging, no noisy debug prints.
+- Security: if auth/security is in the graph, implement stateless JWT-style security; otherwise provide a minimal documented SecurityFilterChain suitable for local development.
+- OpenAPI: annotate controllers with @Tag, @Operation, and relevant @ApiResponse entries.
+- Java style: use records for immutable request/response DTOs on Java ${javaVersion}; avoid field injection and hidden static state.`;
 }
 
 function testingContext(javaVersion: JavaVersion): string {
@@ -292,65 +430,151 @@ function testingContext(javaVersion: JavaVersion): string {
 
 // ─── Base prompt ──────────────────────────────────────────────────────────────
 
+const JAVA_VERSIONS: JavaVersion[] = ["17", "21", "25"];
+
+function isJavaVersion(value: string): value is JavaVersion {
+  return JAVA_VERSIONS.includes(value as JavaVersion);
+}
+
+function resolvePromptTarget(
+  languageOrJavaVersion: string,
+  frameworkOrSpringBootVersion: string,
+) {
+  if (isJavaVersion(languageOrJavaVersion)) {
+    return {
+      language: "java",
+      javaVersion: languageOrJavaVersion,
+      framework: `Spring Boot ${frameworkOrSpringBootVersion}`,
+      springBootVersion: frameworkOrSpringBootVersion as SpringBootVersion,
+    };
+  }
+
+  const language = languageOrJavaVersion.toLowerCase();
+  if (language === "java") {
+    return {
+      language,
+      javaVersion: "21" as JavaVersion,
+      framework: `Spring Boot ${frameworkOrSpringBootVersion}`,
+      springBootVersion: frameworkOrSpringBootVersion as SpringBootVersion,
+    };
+  }
+
+  return {
+    language,
+    javaVersion: null,
+    framework: frameworkOrSpringBootVersion,
+    springBootVersion: null,
+  };
+}
+
 export function buildAIPrompt(
   graph: Graph,
-  language: string,
-  framework: string,
+  languageOrJavaVersion: string,
+  frameworkOrSpringBootVersion: string,
   projectName: string,
+  buildTool: BuildTool = "maven",
+  options: PromptBuildOptions = {},
 ): string {
-  if (language === "java") {
-    const javaVersion: JavaVersion = "17"; // default
-    const springBootVersion: SpringBootVersion = framework as SpringBootVersion || "3.2";
-    const summary  = buildArchitectureSummary(graph);
-    const sbCtx    = springBootContext(javaVersion, springBootVersion);
-    const testCtx  = testingContext(javaVersion);
+  const target = resolvePromptTarget(languageOrJavaVersion, frameworkOrSpringBootVersion);
+  const projectSlug = toKebab(projectName);
+  const incrementalSection = buildIncrementalUpdateSection(graph, options.existingFiles ?? []);
 
-    return `You are a senior Java ${javaVersion} engineer specialising in Spring Boot ${springBootVersion}.
-Your code is production-grade: clean, tested, secure, idiomatic, and fully implemented.
+  if (target.language === "java" && target.javaVersion && target.springBootVersion) {
+    const javaVersion = target.javaVersion;
+    const springBootVersion = target.springBootVersion;
+    const sbCtx = springBootContext(javaVersion, springBootVersion, buildTool);
+    const testCtx = testingContext(javaVersion);
 
-# Project: ${projectName}
-Language: Java ${javaVersion}  |  Framework: Spring Boot ${springBootVersion}
+    return `Act as a principal backend engineer and production code generator.
+Generate a complete, cohesive, buildable ${buildTool} project. Make strong implementation choices when details are unspecified, but keep them consistent with the architecture below.
 
-## System architecture
+# Mission
+Create "${projectName || "architecture-app"}" as a Java ${javaVersion} / Spring Boot ${springBootVersion} application.
+The result must be immediately usable by a developer: install dependencies, run tests, start the app, inspect OpenAPI docs, and exercise the REST endpoints.
+${incrementalSection ? `\n${incrementalSection}\n` : ""}
 
+# Architecture Blueprint
 Components:
-${summary.components}
+${buildComponentBlueprint(graph)}
 
 Relationships:
-${summary.relationships}
+${buildRelationshipBlueprint(graph)}
+
+# Product And Domain Rules
+- Infer a practical domain model for each component from its name and type.
+- Expose clean CRUD-style REST APIs for data-owning services unless the component type clearly implies infrastructure behavior.
+- Reflect architecture relationships in code through service calls, typed clients, events, queues, or adapters. Do not ignore edges.
+- Keep modules loosely coupled: communicate through interfaces, DTOs, and explicit integration boundaries.
+- Use deterministic names, packages, routes, table names, and DTO names derived from the component names.
+- Prefer simple, understandable business logic over elaborate abstractions.
+
+# Required Project Files
+- ${buildTool === "maven" ? "pom.xml" : "build.gradle.kts"} with all dependencies required by the implementation.
+- src/main/java/com/${sanitizePkg(projectName)}/Application.java
+- src/main/resources/application.yml
+- src/main/resources/db/migration/*.sql for every persisted aggregate.
+- Feature packages under src/main/java/com/${sanitizePkg(projectName)}/<module>/...
+- Tests under src/test/java/com/${sanitizePkg(projectName)}/...
+- README.md with setup, run, test, configuration, and endpoint notes.
+- Dockerfile and docker-compose.yml when database or infrastructure services are required.
 ${sbCtx}
 ${testCtx}
 
-## Global output rules
-- Output ONLY raw source code — no markdown fences, no prose, no explanatory text outside code.
-- Every file MUST start with exactly: === FILE: <path/as/shown/below> ===
-- Implement EVERY file listed — do not skip tests.
-- No placeholder TODO comments — write real, working implementations.
-- All code must compile with zero errors on Java ${javaVersion} with Spring Boot ${springBootVersion}.
-- Follow the exact package paths shown in each file header.`.trim();
+# Output Contract
+- Output only file contents. No markdown fences. No explanations.
+- Every file must start with exactly: === FILE: path/to/file.ext ===
+- Use relative paths from the project root.
+- Include all imports, package declarations, configuration, and tests for every new or changed file.
+- Do not emit duplicate files. Use one build file and one application.yml.
+- Do not use placeholders, TODOs, ellipses, pseudo-code, or "implementation omitted".
+- If a dependency is referenced in code, it must be declared in the build file.
+- The generated project must compile and tests must be realistic, not superficial.
+
+# Quality Gate Before Answering
+Mentally verify:
+- The build file matches Java ${javaVersion}, Spring Boot ${springBootVersion}, and ${buildTool}.
+- Package names match file paths.
+- Controllers call services, services call repositories/clients, and DTO/entity mapping is complete.
+- Validation and exception handling paths are implemented.
+- Flyway schema matches JPA entities.
+- Tests use the same routes, DTO fields, and package names as production code.
+
+# Project Identity
+- Project slug: ${projectSlug}
+- Java package root: com.${sanitizePkg(projectName)}
+- Build tool: ${buildTool}`.trim();
   } else {
     const summary = buildArchitectureSummary(graph);
-    return `You are a senior ${language} engineer specialising in ${framework}.
-Your code is production-grade: clean, tested, secure, idiomatic, and fully implemented.
+    return `Act as a principal software engineer and production code generator.
+Generate a complete, cohesive, buildable project. Make strong implementation choices when details are unspecified, but keep them consistent with the architecture below.
 
-# Project: ${projectName}
-Language: ${language}  |  Framework: ${framework}
+# Project
+Name: ${projectName}
+Language: ${target.language}
+Framework: ${target.framework}
+${incrementalSection ? `\n${incrementalSection}\n` : ""}
 
-## System architecture
-
+# Architecture Blueprint
 Components:
 ${summary.components}
 
 Relationships:
 ${summary.relationships}
 
-## Global output rules
-- Output ONLY raw source code — no markdown fences, no prose, no explanatory text outside code.
-- Every file MUST start with exactly: === FILE: <path/as/shown/below> ===
-- Implement EVERY file listed — do not skip tests.
-- No placeholder TODO comments — write real, working implementations.
-- All code must compile with zero errors.
-- Follow best practices for ${language}.`.trim();
+# Output Contract
+- Output only file contents. No markdown fences. No explanations.
+- Every file must start with exactly: === FILE: path/to/file.ext ===
+- Use relative paths from the project root.
+- Include build/config files, source files, tests, and README.
+- Do not use placeholders, TODOs, ellipses, pseudo-code, or "implementation omitted".
+- If a dependency is referenced in code, it must be declared in the build file.
+- The generated project must compile and tests must exercise meaningful behavior.
+
+# Engineering Standards
+- Use idiomatic ${target.language} and ${target.framework}.
+- Keep modules loosely coupled and aligned with the architecture relationships.
+- Implement validation, error handling, and configuration needed for local development.
+- Prefer simple, maintainable code over clever abstractions.`.trim();
   }
 }
 
@@ -363,8 +587,9 @@ export function buildNodeImplementationPrompt(
   springBootVersion: SpringBootVersion,
   projectName: string,
   buildTool: BuildTool = "maven",
+  options: PromptBuildOptions = {},
 ): string {
-  const base       = buildAIPrompt(graph, "java", springBootVersion, projectName);
+  const base       = buildAIPrompt(graph, javaVersion, springBootVersion, projectName, buildTool, options);
   const rel        = buildNodeRelationships(graph, node);
   const specs      = getFileSpecs(node, javaVersion, springBootVersion, projectName, buildTool);
   const implSpecs  = specs.filter(s => !s.isTest);
@@ -416,6 +641,110 @@ ${scaffoldSection}
 - Apply all user configuration choices exactly as specified.`.trim();
 }
 
+// ─── Multi-service streaming prompts ─────────────────────────────────────────
+
+export function buildServiceGenerationPrompts(
+  graph: Graph,
+  javaVersion: JavaVersion,
+  springBootVersion: SpringBootVersion,
+  projectName: string,
+  buildTool: BuildTool = "maven",
+  options: PromptBuildOptions = {},
+): ServiceGenerationPrompt[] {
+  const nodes = buildNodeMap(graph);
+  const projectSlug = toKebab(projectName || "architecture-app");
+  const appPkg = sanitizePkg(projectName || "architectureapp");
+  const sbCtx = springBootContext(javaVersion, springBootVersion, buildTool);
+  const testCtx = testingContext(javaVersion);
+  const incrementalSection = buildIncrementalUpdateSection(graph, options.existingFiles ?? []);
+
+  return graph.nodes.map(node => {
+    const serviceSlug = toKebab(node.name);
+    const serviceRoot = `${projectSlug}-${serviceSlug}`;
+    const servicePkg = `${appPkg}.${sanitizePkg(node.name)}`;
+    const rel = buildNodeRelationships(graph, node);
+    const connected = graph.edges
+      .filter(edge => edge.from === node.id || edge.to === node.id)
+      .map(edge => {
+        const from = nodes.get(edge.from);
+        const to = nodes.get(edge.to);
+        const direction = edge.from === node.id ? "outgoing" : "incoming";
+        return `${direction}: ${from?.name ?? edge.from} -> ${to?.name ?? edge.to}`;
+      });
+    const specs = getFileSpecs(node, javaVersion, springBootVersion, projectName, buildTool)
+      .map(spec => ({
+        ...spec,
+        path: `${serviceRoot}/${spec.path}`,
+      }));
+    const fileList = specs.map(spec => `- === FILE: ${spec.path} === ${spec.description}`).join("\n");
+    const existingNodeFiles = findNodeFiles(node, options.existingFiles ?? [])
+      .slice(0, 10)
+      .map(file => `=== EXISTING FILE: ${file.path} ===\n${truncate(file.content, 1800)}`)
+      .join("\n\n");
+
+    return {
+      nodeId: node.id,
+      serviceName: node.name,
+      serviceRoot,
+      prompt: `Act as a principal backend engineer and production code generator.
+Generate exactly one independently buildable service for a multi-service architecture. Do not generate code for every service in this request.
+
+# Target Service
+- Service name: ${node.name}
+- Component type: ${node.type}
+- Repository/project folder: ${serviceRoot}
+- Java package root: com.${servicePkg}
+- Java: ${javaVersion}
+- Spring Boot: ${springBootVersion}
+- Build tool: ${buildTool}
+
+# Full Architecture Context
+Components:
+${buildComponentBlueprint(graph)}
+
+Relationships:
+${buildRelationshipBlueprint(graph)}
+
+# Target Service Connections
+Incoming:
+${rel.incoming}
+
+Outgoing:
+${rel.outgoing}
+
+Connected boundaries:
+${formatList(connected)}
+${incrementalSection ? `\n${incrementalSection}\n` : ""}
+
+# Generation Scope
+- Generate only "${node.name}" and the files needed inside ${serviceRoot}/.
+- Every output path must start with ${serviceRoot}/.
+- Do not create files for other services. Represent other services only as typed clients, ports, DTOs, adapters, event contracts, or configuration needed by this service.
+- If existing code for this service is present, update it in place instead of regenerating unrelated files.
+- If this service depends on another newly added service, add the smallest focused client/adapter and DTO mapping needed for the connection.
+- Keep this service independently buildable and testable.
+
+# Required Files For This Service
+${fileList}
+${sbCtx}
+${testCtx}
+
+# Existing Service Code Excerpts
+${existingNodeFiles || "- None for this service."}
+
+# Output Contract
+- Output only file contents. No markdown fences. No explanations.
+- Every file must start with exactly: === FILE: path/to/file.ext ===
+- Use only relative paths from the workspace root, always under ${serviceRoot}/.
+- Include all imports, package declarations, configuration, and tests for every new or changed file.
+- Do not emit duplicate files.
+- Do not use placeholders, TODOs, ellipses, pseudo-code, or "implementation omitted".
+- If a dependency is referenced in code, declare it in ${serviceRoot}/${buildTool === "maven" ? "pom.xml" : "build.gradle.kts"}.
+- The service must compile by itself from inside ${serviceRoot}.`.trim(),
+    };
+  });
+}
+
 // ─── Full-project prompt (used by "Generate Prompt" button) ──────────────────
 
 export function buildFullProjectPrompt(
@@ -424,10 +753,11 @@ export function buildFullProjectPrompt(
   springBootVersion: SpringBootVersion,
   projectName: string,
   buildTool: BuildTool = "maven",
+  options: PromptBuildOptions = {},
 ): string {
   const pkg      = sanitizePkg(projectName);
   const buildFile = buildTool === "maven" ? "pom.xml" : "build.gradle.kts";
-  const base = buildAIPrompt(graph, "java", springBootVersion, projectName);
+  const base = buildAIPrompt(graph, javaVersion, springBootVersion, projectName, buildTool, options);
   return `${base}
 
 ---

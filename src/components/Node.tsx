@@ -8,11 +8,14 @@ interface Props {
   node: NodeData;
   selected: boolean;
   hasCode: boolean;
+  classCount?: number;
+  isExpanded?: boolean;
   onPointerDown: (e: React.PointerEvent, node: NodeData) => void;
   onDelete: (id: string) => void;
   onRename: (id: string, name: string) => void;
   onConfigure: (id: string) => void;
   onViewCode: (id: string) => void;
+  onExpandClasses?: (id: string) => void;
   onStartWire: (
     id: string,
     side: "top" | "right" | "bottom" | "left",
@@ -91,11 +94,14 @@ export default function Node({
   node,
   selected,
   hasCode,
+  classCount,
+  isExpanded,
   onPointerDown,
   onDelete,
   onRename,
   onConfigure,
   onViewCode,
+  onExpandClasses,
   onStartWire,
 }: Props) {
   const [editing, setEditing] = useState(false);
@@ -122,7 +128,7 @@ export default function Node({
   return (
     <div
       id={`node-${node.id}`}
-      className={`node ${selected ? "selected" : ""} ${configured ? "node--configured" : ""} ${hasCode ? "node--has-code" : ""}`}
+      className={`node ${selected ? "selected" : ""} ${configured ? "node--configured" : ""} ${hasCode ? "node--has-code" : ""} ${node.config?.isClassNode ? "node--class" : ""} ${isExpanded ? "node--expanded" : ""}`}
       style={{ transform: `translate(${node.x}px, ${node.y}px)` }}
       onPointerDown={(e) => { pointerOrigin.current = { x: e.clientX, y: e.clientY }; onPointerDown(e, node); }}
       onDoubleClick={(e) => { e.stopPropagation(); setEditing(true); }}
@@ -182,6 +188,18 @@ export default function Node({
 
       {/* ── has-code indicator ── */}
       {hasCode && <div className="node-code-indicator" title="Click to inspect generated code" />}
+
+      {/* ── class expand toggle ── */}
+      {onExpandClasses && classCount != null && classCount > 0 && (
+        <button
+          className={`node-expand-btn${isExpanded ? " node-expand-btn--open" : ""}`}
+          onClick={(e) => { e.stopPropagation(); onExpandClasses(node.id); }}
+          onPointerDown={(e) => e.stopPropagation()}
+          title={isExpanded ? "Collapse classes" : `Expand ${classCount} classes`}
+        >
+          {isExpanded ? "▾" : "▸"} {classCount} {classCount === 1 ? "class" : "classes"}
+        </button>
+      )}
 
       {/* ── class map ── */}
       {classMap && (

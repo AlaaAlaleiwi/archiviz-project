@@ -8,7 +8,7 @@ import {
 } from "./defaultSettings";
 
 export type { AIProvider, AISettings };
-export type AppTheme = "black" | "red" | "purple" | "green" | "blue";
+export type AppTheme = "black" | "red" | "purple" | "green" | "blue" | "glass";
 export {
   DEFAULT_EDITOR_SETTINGS,
   DEFAULT_DOCKER_SETTINGS,
@@ -94,6 +94,7 @@ const THEME_OPTIONS: { id: AppTheme; label: string; swatch: string; hint: string
   { id: "purple", label: "Purple", swatch: "#a78bfa", hint: "Creative" },
   { id: "green", label: "Green", swatch: "#34d399", hint: "Spring" },
   { id: "blue", label: "Blue", swatch: "#38bdf8", hint: "Classic" },
+  { id: "glass", label: "Glass", swatch: "#007AFF", hint: "Apple frosted" },
 ];
 
 const SETTINGS_NAV: { id: SettingsSection; label: string; hint: string }[] = [

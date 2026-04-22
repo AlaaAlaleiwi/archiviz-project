@@ -15,6 +15,12 @@ export type WorkspaceDiagnostic = {
   message?: string;
 };
 
+export type WorkspaceFileGroup = {
+  id: string;
+  label: string;
+  files: WorkspaceFile[];
+};
+
 type FileTreeNode = {
   name: string;
   path: string;
@@ -29,12 +35,16 @@ type FileWorkspaceProps = {
   onFilesChange: (files: WorkspaceFile[]) => void;
   editorTheme: "dark" | "light";
   editorSettings: EditorSettings;
+  projectName?: string;
   showGitFolder?: boolean;
   onBuildProject?: () => void;
   onRunProject?: () => void;
   runnerBusy?: boolean;
   errorPaths?: string[];
   errorDiagnostics?: WorkspaceDiagnostic[];
+  fileGroups?: WorkspaceFileGroup[];
+  activeGroupId?: string;
+  onActiveGroupChange?: (id: string) => void;
 };
 
 type FileContextMenu = {
@@ -197,14 +207,16 @@ function buildFileTree(files: WorkspaceFile[]) {
   const root: FileTreeNode = { name: "", path: "", children: new Map() };
 
   for (const file of files) {
-    const parts = file.path.split("/").filter(Boolean);
+    const normalizedPath = normalizeWorkspacePath(file.path);
+    const normalizedFile = normalizedPath === file.path ? file : { ...file, path: normalizedPath };
+    const parts = normalizedPath.split("/").filter(Boolean);
     let current = root;
 
     parts.forEach((part, index) => {
       const path = parts.slice(0, index + 1).join("/");
       const existing = current.children.get(part);
       const next: FileTreeNode = existing ?? { name: part, path, children: new Map<string, FileTreeNode>() };
-      if (index === parts.length - 1) next.file = file;
+      if (index === parts.length - 1) next.file = normalizedFile;
       current.children.set(part, next);
       current = next;
     });
@@ -309,12 +321,16 @@ export default function FileWorkspace({
   onFilesChange,
   editorTheme,
   editorSettings,
+  projectName,
   showGitFolder = false,
   onBuildProject,
   onRunProject,
   runnerBusy = false,
   errorPaths = [],
   errorDiagnostics = [],
+  fileGroups = [],
+  activeGroupId = "all",
+  onActiveGroupChange,
 }: FileWorkspaceProps) {
   const [openPaths, setOpenPaths] = useState<string[]>([]);
   const [fileSearch, setFileSearch] = useState("");
@@ -329,19 +345,27 @@ export default function FileWorkspace({
   const pendingNavigationRef = useRef<NavigationTarget | null>(null);
   const activeFileRef = useRef<WorkspaceFile | null>(null);
   const visibleFilesRef = useRef<WorkspaceFile[]>([]);
+  const selectedGroup = useMemo(
+    () => fileGroups.find(group => group.id === activeGroupId) ?? null,
+    [activeGroupId, fileGroups]
+  );
+  const scopedFiles = useMemo(
+    () => selectedGroup ? selectedGroup.files : files,
+    [files, selectedGroup]
+  );
 
   const treeFiles = useMemo(() => {
-    if (!showGitFolder || files.some(file => file.path === ".git/.archiviz" || file.path.startsWith(".git/"))) {
-      return files;
+    if (!showGitFolder || scopedFiles.some(file => file.path === ".git/.archiviz" || file.path.startsWith(".git/"))) {
+      return scopedFiles;
     }
-    return [{ path: ".git/.archiviz", content: "" }, ...files];
-  }, [files, showGitFolder]);
+    return [{ path: ".git/.archiviz", content: "" }, ...scopedFiles];
+  }, [scopedFiles, showGitFolder]);
   const fileTree = useMemo(() => buildFileTree(treeFiles), [treeFiles]);
   const hasTreeMatches = useMemo(() => {
     const query = fileSearch.trim().toLowerCase();
     return Array.from(fileTree.children.values()).some(child => childTreeMatches(child, query));
   }, [fileSearch, fileTree]);
-  const visibleFiles = useMemo(() => files.filter(file => !isFolderPlaceholder(file.path)), [files]);
+  const visibleFiles = useMemo(() => scopedFiles.filter(file => !isFolderPlaceholder(file.path)), [scopedFiles]);
   const errorPathSet = useMemo(
     () => new Set([...errorPaths, ...errorDiagnostics.map(diagnostic => diagnostic.path)]),
     [errorPaths, errorDiagnostics]
@@ -639,6 +663,30 @@ export default function FileWorkspace({
             </button>
           </div>
         </div>
+        {fileGroups.length > 1 && (
+          <div className="service-group-tabs" role="tablist" aria-label="Service workspaces">
+            <button
+              type="button"
+              className={`service-group-tab ${activeGroupId === "all" ? "active" : ""}`}
+              onClick={() => onActiveGroupChange?.("all")}
+            >
+              <span>All Services</span>
+              <small>{files.filter(file => !isFolderPlaceholder(file.path)).length}</small>
+            </button>
+            {fileGroups.map(group => (
+              <button
+                key={group.id}
+                type="button"
+                className={`service-group-tab ${activeGroupId === group.id ? "active" : ""}`}
+                onClick={() => onActiveGroupChange?.(group.id)}
+                title={group.label}
+              >
+                <span>{group.label}</span>
+                <small>{group.files.filter(file => !isFolderPlaceholder(file.path)).length}</small>
+              </button>
+            ))}
+          </div>
+        )}
         {newEntryMode && (
           <div className="file-create-box">
             <div className="file-create-title">{newEntryMode === "file" ? "New File" : "New Folder"}</div>
@@ -672,16 +720,24 @@ export default function FileWorkspace({
         <div className="file-tree-scroll" onContextMenu={(event) => openContextMenu(event)}>
           {treeFiles.length > 0 ? (
             hasTreeMatches ? (
-              <FileTree
-                node={fileTree}
-                activePath={activeFile?.path ?? null}
-                onSelect={selectFile}
-                collapsedPaths={collapsedPaths}
-                onToggleFolder={toggleFolder}
-                onContextMenu={openContextMenu}
-                errorPaths={errorPathSet}
-                filter={fileSearch}
-              />
+              <>
+                {projectName && (
+                  <div className="file-tree-project-root">
+                    <span className="file-tree-project-root-icon" />
+                    <span className="file-tree-project-root-name">{projectName}</span>
+                  </div>
+                )}
+                <FileTree
+                  node={fileTree}
+                  activePath={activeFile?.path ?? null}
+                  onSelect={selectFile}
+                  collapsedPaths={collapsedPaths}
+                  onToggleFolder={toggleFolder}
+                  onContextMenu={openContextMenu}
+                  errorPaths={errorPathSet}
+                  filter={fileSearch}
+                />
+              </>
             ) : (
               <div className="workspace-empty">No files match that search.</div>
             )

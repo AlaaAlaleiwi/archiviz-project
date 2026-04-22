@@ -1,4 +1,13 @@
-import { useState, useRef, useCallback, useMemo, useEffect, type ChangeEvent, type PointerEvent as ReactPointerEvent } from "react";
+import {
+  useState,
+  useRef,
+  useCallback,
+  useMemo,
+  useEffect,
+  type ChangeEvent,
+  type DragEvent as ReactDragEvent,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 import "./styles.css";
 import { saveAs } from "file-saver";
 import { invoke } from "@tauri-apps/api/core";
@@ -6,7 +15,7 @@ import { invoke } from "@tauri-apps/api/core";
 import Palette from "./components/Palette";
 import Canvas from "./components/Canvas";
 import CodePanel from "./components/CodePanel";
-import FileWorkspace, { type WorkspaceFile } from "./components/FileWorkspace";
+import FileWorkspace, { type WorkspaceFile, type WorkspaceFileGroup } from "./components/FileWorkspace";
 import ApiTester from "./components/ApiTester";
 import Topbar, { ProjectConfigModal, type JavaProjectConfig, type RepositoryGitOperation } from "./components/Topbar";
 import Settings, {
@@ -33,8 +42,8 @@ import { ProjectImportService } from "./services/ProjectImportService";
 import { ZipService } from "./services/ZipService";
 import { ProjectScaffoldService } from "./services/ProjectScaffoldService";
 
-import { buildAIPrompt } from "./utils/promptBuilder";
-import { parseMultiFileResponse } from "./utils/stringUtils";
+import { buildAIPrompt, buildServiceGenerationPrompts } from "./utils/promptBuilder";
+import { analyzeSourceFile } from "./utils/fileAnalysis";
 
 const genId = () => Math.random().toString(36).slice(2, 10);
 
@@ -61,6 +70,15 @@ type PanState = {
   originY: number;
 } | null;
 
+type GenerationProgress = {
+  serviceName: string;
+  currentFile: string;
+  completedFiles: number;
+  totalServices: number;
+  currentServiceIndex: number;
+  streamPreview: string;
+} | null;
+
 const MIN_SCALE = 0.5;
 const MAX_SCALE = 2.4;
 const ZOOM_STEP = 1.14;
@@ -74,6 +92,8 @@ const GIT_SETTINGS_KEY       = "archiviz_git_settings";
 const TERMINAL_SETTINGS_KEY  = "archiviz_terminal_settings";
 const PALETTE_WIDTH_KEY      = "archiviz_palette_width";
 const CODE_PANEL_WIDTH_KEY   = "archiviz_code_panel_width";
+const NODE_DRAG_MIME         = "application/x-archiviz-node";
+const NODE_DRAG_TEXT_PREFIX  = "archiviz-node:";
 
 const dedupeFiles = (files: WorkspaceFile[]) => {
   const fileMap = new Map<string, string>();
@@ -81,11 +101,121 @@ const dedupeFiles = (files: WorkspaceFile[]) => {
   return Array.from(fileMap.entries()).map(([path, content]) => ({ path, content }));
 };
 
+const parseStreamingFiles = (raw: string, includeCurrentFile: boolean) => {
+  const cleaned = raw.replace(/```[a-z]*\r?\n?/gi, "").replace(/```\r?\n?/g, "");
+  const markerRegex = /^=== FILE:\s*(.+?)\s*===\s*$/gm;
+  const matches = Array.from(cleaned.matchAll(markerRegex));
+  const files: WorkspaceFile[] = [];
+
+  matches.forEach((match, index) => {
+    const isCurrent = index === matches.length - 1;
+    if (isCurrent && !includeCurrentFile) return;
+
+    const path = match[1]?.trim();
+    const contentStart = (match.index ?? 0) + match[0].length;
+    const contentEnd = matches[index + 1]?.index ?? cleaned.length;
+    const content = cleaned.slice(contentStart, contentEnd).trim();
+    if (path && content) files.push({ path, content });
+  });
+
+  return {
+    files,
+    currentPath: matches.at(-1)?.[1]?.trim() ?? "",
+  };
+};
+
 const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
 
 const loadNumberSetting = (key: string, fallback: number, min: number, max: number) => {
   const value = Number(localStorage.getItem(key));
   return Number.isFinite(value) ? clamp(value, min, max) : fallback;
+};
+
+const getDraggedNodeType = (dataTransfer: DataTransfer): NodeType | null => {
+  const typedPayload = dataTransfer.getData(NODE_DRAG_MIME).trim();
+  if (typedPayload) return typedPayload;
+
+  const textPayload = dataTransfer.getData("text/plain").trim();
+  if (textPayload.startsWith(NODE_DRAG_TEXT_PREFIX)) {
+    const type = textPayload.slice(NODE_DRAG_TEXT_PREFIX.length).trim();
+    return type || null;
+  }
+
+  const legacyPayload = dataTransfer.getData("type").trim();
+  return legacyPayload || null;
+};
+
+const normalizePathKey = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/g, "");
+const toRepoSlug = (value: string) =>
+  value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "service";
+
+const toServiceProjectRoot = (projectName: string, serviceName: string) =>
+  `${toRepoSlug(projectName || "architecture-app")}-${toRepoSlug(serviceName)}`;
+
+const getNodeServiceRoot = (projectName: string, node: NodeData) =>
+  typeof node.config?.serviceRoot === "string" && node.config.serviceRoot.trim()
+    ? node.config.serviceRoot
+    : toServiceProjectRoot(projectName, node.name);
+
+const stripServiceProjectRoot = (files: WorkspaceFile[], serviceRoot: string) =>
+  files.map(file => {
+    const prefix = `${serviceRoot}/`;
+    return file.path.startsWith(prefix)
+      ? { ...file, path: file.path.slice(prefix.length) }
+      : file;
+  });
+
+const languageToNodeType = (language: Language, framework: string): NodeType => {
+  const f = framework.toLowerCase();
+  if (["React", "Next.js", "Vue", "Angular"].some(name => f.includes(name.toLowerCase()))) return "frontend_app";
+  if (f.includes("spring") || f.includes("quarkus")) return "microservice";
+  if (f.includes("fastapi") || f.includes("django") || f.includes("flask")) return "api";
+  if (f.includes("express") || f.includes("nest")) return "api";
+  if (language === "java" || language === "python" || language === "go" || language === "csharp") return "microservice";
+  if (language === "typescript" || language === "javascript") return "frontend_app";
+  return "module";
+};
+
+const nodeFileCandidates = (node: NodeData) => {
+  const name = normalizePathKey(node.name);
+  const type = normalizePathKey(node.type);
+  return [...new Set([name, type].filter(key => key.length >= 3))];
+};
+
+const isNodeSourceFile = (path: string) => {
+  const lower = path.toLowerCase();
+  return (
+    lower.includes("/src/main/") ||
+    lower.includes("/src/test/") ||
+    lower.includes("/db/migration/") ||
+    /\.(java|kt|ts|tsx|js|jsx|py|go|cs|sql)$/.test(lower)
+  );
+};
+
+const getWorkspaceFilesForNode = (node: NodeData, files: WorkspaceFile[]) => {
+  // Nodes imported from real projects carry an explicit file list in config
+  if (Array.isArray(node.config?.sourceFiles) && (node.config.sourceFiles as string[]).length > 0) {
+    const paths = new Set(node.config.sourceFiles as string[]);
+    return files.filter(f => paths.has(f.path));
+  }
+
+  const candidates = nodeFileCandidates(node);
+  if (candidates.length === 0) return [];
+
+  return files.filter(file => {
+    if (!isNodeSourceFile(file.path)) return false;
+    const normalizedPath = normalizePathKey(file.path);
+    return candidates.some(candidate => normalizedPath.includes(candidate));
+  });
+};
+
+const isSharedProjectFile = (path: string) => {
+  const lower = path.toLowerCase();
+  return (
+    !lower.includes("/src/main/java/") &&
+    !lower.includes("/src/test/java/") &&
+    !lower.includes("/db/migration/")
+  ) || /(^|\/)(application|bootstrap)\.(ya?ml|properties)$/.test(lower);
 };
 
 const isHiddenWorkspacePlaceholder = (path: string) => path.split("/").pop() === ".gitkeep";
@@ -480,7 +610,8 @@ export default function App() {
   const [paletteWidth, setPaletteWidth] = useState(() => loadNumberSetting(PALETTE_WIDTH_KEY, 286, 220, 460));
   const [codePanelWidth, setCodePanelWidth] = useState(() => loadNumberSetting(CODE_PANEL_WIDTH_KEY, 380, 300, 560));
 
-  const language: Language = "java";
+  const [language, setLanguage] = useState<Language>("java");
+  const [detectedFramework, setDetectedFramework] = useState("Spring Boot");
   const [javaVersion, setJavaVersion] = useState<JavaVersion>("21");
   const [springBootVersion, setSpringBootVersion] = useState<SpringBootVersion>("3.4");
   const [buildTool, setBuildTool] = useState<BuildTool>("maven");
@@ -510,9 +641,12 @@ export default function App() {
   const [chatUnread, setChatUnread] = useState(0);
   const [configuringNodeId, setConfiguringNodeId] = useState<string | null>(null);
   const [viewingNodeId, setViewingNodeId] = useState<string | null>(null);
+  const [expandedNodeIds, setExpandedNodeIds] = useState<Set<string>>(new Set());
   const [nodeCode, setNodeCode] = useState<Record<string, { path: string; content: string }[]>>({});
   const [workspaceFiles, setWorkspaceFiles] = useState<WorkspaceFile[]>([]);
+  const [workspaceFilesImported, setWorkspaceFilesImported] = useState(false);
   const [activeWorkspacePath, setActiveWorkspacePath] = useState<string | null>(null);
+  const [activeWorkspaceGroupId, setActiveWorkspaceGroupId] = useState("all");
   const [buildDiagnostics, setBuildDiagnostics] = useState<BuildDiagnostic[]>([]);
   const [workspaceView, setWorkspaceView] = useState<"canvas" | "editor" | "api" | null>("canvas");
   const [gitRepositoryReady, setGitRepositoryReady] = useState(false);
@@ -523,6 +657,7 @@ export default function App() {
   const [topbarGitTargetBranch, setTopbarGitTargetBranch] = useState("main");
   const [topbarGitBranches, setTopbarGitBranches] = useState<string[]>([]);
   const [projectGenerating, setProjectGenerating] = useState(false);
+  const [generationProgress, setGenerationProgress] = useState<GenerationProgress>(null);
   const [codeAgentRunning, setCodeAgentRunning] = useState(false);
   const [codeAgentOutput, setCodeAgentOutput] = useState("");
   const [runnerBusy] = useState(false);
@@ -534,6 +669,7 @@ export default function App() {
   const abortRef = useRef<AbortController | null>(null);
   const projectGenerationInFlightRef = useRef(false);
   const folderInputRef = useRef<HTMLInputElement>(null);
+  const folderImportModeRef = useRef<"replace" | "append-service">("replace");
   const projectFileInputRef = useRef<HTMLInputElement>(null);
   const lastSavedSignatureRef = useRef<string>(autosavedProject ? getProjectSignature(autosavedProject) : "");
   const buildOnOpenRef = useRef(false);
@@ -706,10 +842,10 @@ export default function App() {
      GRAPH ACTIONS
   ======================= */
 
-  const addNode = (type: NodeType, x: number, y: number) => {
+  const addNode = (type: NodeType, x: number, y: number, name?: string) => {
     setGraph((g) => ({
       ...g,
-      nodes: [...g.nodes, { id: genId(), type, name: type, x, y }],
+      nodes: [...g.nodes, { id: genId(), type, name: name ?? type, x, y }],
     }));
   };
 
@@ -759,7 +895,7 @@ export default function App() {
   );
 
   const onNodePointerDown = useCallback(
-    (e: React.PointerEvent, node: NodeData) => {
+    (e: ReactPointerEvent, node: NodeData) => {
       e.stopPropagation();
       e.preventDefault();
 
@@ -898,19 +1034,41 @@ export default function App() {
      DROP
   ======================= */
 
-  const onDrop = (e: React.DragEvent<HTMLDivElement>) => {
+  const onDrop = (e: ReactDragEvent<HTMLDivElement>) => {
     e.preventDefault();
-    const type = e.dataTransfer.getData("type") as NodeType;
+    const type = getDraggedNodeType(e.dataTransfer);
     if (!type) return;
 
+    e.dataTransfer.dropEffect = "copy";
     const { x, y } = clientToWorld(e.clientX, e.clientY);
     addNode(type, x - 80, y - 40);
   };
 
-  const onDragOver = (e: React.DragEvent<HTMLDivElement>) => e.preventDefault();
+  const onDragOver = (e: ReactDragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "copy";
+  };
+
+  const onPaletteNodeDrop = (type: NodeType, clientX: number, clientY: number, name?: string) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return false;
+
+    const rect = canvas.getBoundingClientRect();
+    const isInsideCanvas =
+      clientX >= rect.left &&
+      clientX <= rect.right &&
+      clientY >= rect.top &&
+      clientY <= rect.bottom;
+
+    if (!isInsideCanvas) return false;
+
+    const { x, y } = clientToWorld(clientX, clientY);
+    addNode(type, x - 80, y - 40, name);
+    return true;
+  };
 
   const onCanvasPointerDown = useCallback(
-    (e: React.PointerEvent<HTMLDivElement>) => {
+    (e: ReactPointerEvent<HTMLDivElement>) => {
       setSelectedIds([]);
       setSelectedEdgeId(null);
       setDrag(null);
@@ -934,7 +1092,7 @@ export default function App() {
   );
 
   const onEdgePointerDown = useCallback(
-    (e: React.PointerEvent<SVGPathElement>, edgeId: string) => {
+    (e: ReactPointerEvent<SVGPathElement>, edgeId: string) => {
       e.stopPropagation();
       e.preventDefault();
 
@@ -976,6 +1134,8 @@ export default function App() {
 
   const clearCanvas = useCallback(() => {
     setGraph({ nodes: [], edges: [] });
+    setLanguage("java");
+    setDetectedFramework("Spring Boot");
     setSelectedIds([]);
     setSelectedEdgeId(null);
     setWire(null);
@@ -984,6 +1144,7 @@ export default function App() {
     setPrompt("");
     setNodeCode({});
     setWorkspaceFiles([]);
+    setWorkspaceFilesImported(false);
     setActiveWorkspacePath(null);
     setBuildDiagnostics([]);
     setWorkspaceView("canvas");
@@ -996,6 +1157,8 @@ export default function App() {
 
   const createNewProject = useCallback(() => {
     setProjectName("architecture-app");
+    setLanguage("java");
+    setDetectedFramework("Spring Boot");
     setJavaVersion("21");
     setSpringBootVersion("3.4");
     setBuildTool("maven");
@@ -1010,6 +1173,7 @@ export default function App() {
     setProjectFileHandle(null);
     setNodeCode({});
     setWorkspaceFiles([]);
+    setWorkspaceFilesImported(false);
     setActiveWorkspacePath(null);
     setBuildDiagnostics([]);
     setWorkspaceView("canvas");
@@ -1023,6 +1187,8 @@ export default function App() {
 
   const createConfiguredProject = useCallback((cfg: JavaProjectConfig) => {
     createNewProject();
+    setLanguage("java");
+    setDetectedFramework("Spring Boot");
     setProjectName(cfg.projectName);
     setJavaVersion(cfg.javaVersion);
     setSpringBootVersion(cfg.springBootVersion);
@@ -1032,6 +1198,8 @@ export default function App() {
 
   const applyProjectData = useCallback((parsed: SavedProjectFile) => {
     setProjectName(parsed.projectName);
+    setLanguage("java");
+    setDetectedFramework("Spring Boot");
     setJavaVersion(parsed.javaVersion);
     setSpringBootVersion(parsed.springBootVersion);
     setBuildTool(parsed.buildTool);
@@ -1047,6 +1215,7 @@ export default function App() {
     setDockerSettings(parsed.dockerSettings ?? loadDockerSettings());
     const restoredFiles = parsed.workspaceFiles ?? Object.values(parsed.nodeCode ?? {}).flat();
     setWorkspaceFiles(restoredFiles);
+    setWorkspaceFilesImported(false);
     setActiveWorkspacePath(restoredFiles[0]?.path ?? null);
     setBuildDiagnostics([]);
     setWorkspaceView(restoredFiles.length > 0 ? "editor" : "canvas");
@@ -1098,6 +1267,17 @@ export default function App() {
   }, [applyProjectData, rememberRecentProject]);
 
   const onLoadProject = useCallback(() => {
+    folderImportModeRef.current = "replace";
+    folderInputRef.current?.click();
+  }, []);
+
+  const onImportIdeProject = useCallback(() => {
+    folderImportModeRef.current = "replace";
+    folderInputRef.current?.click();
+  }, []);
+
+  const onAddServiceProject = useCallback(() => {
+    folderImportModeRef.current = "append-service";
     folderInputRef.current?.click();
   }, []);
 
@@ -1148,9 +1328,104 @@ export default function App() {
 
       try {
         const importedProject = await projectImportService.importFromFiles(files);
+        const importedFiles: WorkspaceFile[] = importedProject.files;
+        const nextLanguage = importedProject.language;
+        const nextFramework = importedProject.framework;
+        const nextJavaVersion = importedProject.javaVersion ?? javaVersion;
+        const nextSpringBootVersion = importedProject.springBootVersion ?? springBootVersion;
+        const nextBuildTool = importedProject.buildTool ?? buildTool;
+
+        if (folderImportModeRef.current === "append-service") {
+          const serviceRoot = toServiceProjectRoot(projectName, importedProject.projectName);
+          const serviceFiles = importedFiles.map(file => ({
+            path: `${serviceRoot}/${file.path}`,
+            content: file.content,
+          }));
+          const maxX = graph.nodes.length > 0 ? Math.max(...graph.nodes.map(node => node.x)) : 360;
+          const maxY = graph.nodes.length > 0 ? Math.max(...graph.nodes.map(node => node.y)) : 80;
+          const idMap = new Map(importedProject.graph.nodes.map(node => [node.id, `${genId()}-${node.id}`]));
+          const importedNodes = importedProject.graph.nodes.length > 0
+            ? importedProject.graph.nodes.map(node => ({
+                ...node,
+                id: idMap.get(node.id) ?? genId(),
+                x: node.x + maxX + 340,
+                y: node.y + maxY,
+                config: {
+                  ...node.config,
+                  // Prefix sourceFiles so they match the prefixed workspaceFiles paths
+                  ...(Array.isArray(node.config?.sourceFiles) ? {
+                    sourceFiles: (node.config.sourceFiles as string[]).map(p => `${serviceRoot}/${p}`),
+                  } : {}),
+                  imported: true,
+                  importedProjectName: importedProject.projectName,
+                  language: nextLanguage,
+                  framework: nextFramework,
+                  serviceRoot,
+                },
+              }))
+            : [{
+                id: genId(),
+                name: importedProject.projectName,
+                type: languageToNodeType(nextLanguage, nextFramework),
+                x: maxX + 340,
+                y: maxY + 40,
+                config: {
+                  imported: true,
+                  importedProjectName: importedProject.projectName,
+                  language: nextLanguage,
+                  framework: nextFramework,
+                  serviceRoot,
+                },
+              } satisfies NodeData];
+          const importedEdges = importedProject.graph.edges
+            .map(edge => {
+              const from = idMap.get(edge.from);
+              const to = idMap.get(edge.to);
+              if (!from || !to) return null;
+              return {
+                ...edge,
+                id: `${from}:${to}`,
+                from,
+                to,
+              };
+            })
+            .filter((edge): edge is Edge => Boolean(edge));
+          const nextGraph = {
+            ...graph,
+            nodes: [...graph.nodes, ...importedNodes],
+            edges: [...graph.edges, ...importedEdges],
+          };
+          const nextNodeCode = Object.fromEntries(
+            importedNodes.map(node => [node.id, getWorkspaceFilesForNode(node, serviceFiles)])
+          );
+
+          setGraph(nextGraph);
+          setWorkspaceFiles(prev => dedupeFiles([...prev, ...serviceFiles]));
+          setNodeCode(prev => ({ ...prev, ...nextNodeCode }));
+          setActiveWorkspacePath(serviceFiles[0]?.path ?? null);
+          setActiveWorkspaceGroupId("all");
+          setWorkspaceView("editor");
+          setActiveProjectStarted(true);
+          setPrompt(buildAIPrompt(nextGraph, javaVersion, springBootVersion, projectName, buildTool, {
+            existingFiles: dedupeFiles([...workspaceFiles, ...serviceFiles]),
+          }));
+          return;
+        }
 
         setProjectName(importedProject.projectName);
+        setLanguage(nextLanguage);
+        setDetectedFramework(nextFramework);
+        setJavaVersion(nextJavaVersion);
+        setSpringBootVersion(nextSpringBootVersion);
+        setBuildTool(nextBuildTool);
         setGraph(importedProject.graph);
+        setWorkspaceFiles(importedFiles);
+        setWorkspaceFilesImported(true);
+        setNodeCode(Object.fromEntries(
+          importedProject.graph.nodes.map(node => [node.id, getWorkspaceFilesForNode(node, importedFiles)])
+        ));
+        setActiveWorkspacePath(importedFiles[0]?.path ?? null);
+        setActiveWorkspaceGroupId("all");
         setSelectedIds([]);
         setSelectedEdgeId(null);
         setWire(null);
@@ -1159,21 +1434,26 @@ export default function App() {
         setPrompt(
           buildAIPrompt(
             importedProject.graph,
-            javaVersion,
-            springBootVersion,
-            importedProject.projectName
+            nextLanguage === "java" ? nextJavaVersion : nextLanguage,
+            nextLanguage === "java" ? nextSpringBootVersion : nextFramework,
+            importedProject.projectName,
+            nextBuildTool,
+            { existingFiles: importedFiles }
           )
         );
         setCamera({ x: 120, y: 72, scale: 1 });
-        setWorkspaceView("canvas");
+        setWorkspaceView("editor");
+        setActiveProjectStarted(true);
       } catch (error) {
         console.error(error);
+        alert("Could not import this folder.");
       } finally {
         setImportingProject(false);
+        folderImportModeRef.current = "replace";
         e.target.value = "";
       }
     },
-    [projectImportService, javaVersion, springBootVersion]
+    [buildTool, graph, javaVersion, projectImportService, projectName, springBootVersion, workspaceFiles]
   );
 
   // Fallback for browsers without File System Access API
@@ -1245,7 +1525,7 @@ export default function App() {
     const generatedFiles = workspaceFiles.length > 0 ? workspaceFiles : Object.values(nodeCode).flat();
 
     // 2. Build scaffold (pom.xml/build.gradle, Dockerfile, docker-compose, Terraform, etc.)
-    const scaffoldFiles = scaffoldService.generate({
+    const scaffoldFiles = workspaceFilesImported ? [] : scaffoldService.generate({
       projectName,
       javaVersion,
       springBootVersion,
@@ -1286,13 +1566,14 @@ export default function App() {
     const dedupedFiles = Array.from(fileMap.entries()).map(([path, content]) => ({ path, content }));
 
     await zipService.download(dedupedFiles, projectName);
-  }, [buildTool, dockerSettings, javaVersion, springBootVersion, graph, nodeCode, projectName, prompt, scaffoldService, workspaceFiles, zipService]);
+  }, [buildTool, dockerSettings, javaVersion, springBootVersion, graph, nodeCode, projectName, prompt, scaffoldService, workspaceFiles, workspaceFilesImported, zipService]);
 
   const getRunnableProjectFiles = useCallback(() => {
     const generatedFiles = (workspaceFiles.length > 0 ? workspaceFiles : Object.values(nodeCode).flat())
       .filter(file => !isHiddenWorkspacePlaceholder(file.path));
 
     if (generatedFiles.length === 0) return [];
+    if (workspaceFilesImported) return generatedFiles;
 
     const scaffoldFiles = scaffoldService.generate({
       projectName,
@@ -1304,9 +1585,63 @@ export default function App() {
     });
 
     return dedupeFiles([...scaffoldFiles, ...generatedFiles]);
-  }, [buildTool, dockerSettings, javaVersion, nodeCode, projectName, scaffoldService, springBootVersion, workspaceFiles]);
+  }, [buildTool, dockerSettings, javaVersion, nodeCode, projectName, scaffoldService, springBootVersion, workspaceFiles, workspaceFilesImported]);
 
-  const materializeProjectWorkspace = useCallback(async (filesOverride?: WorkspaceFile[]) => {
+  const serviceFileGroups = useMemo<WorkspaceFileGroup[]>(() => {
+    const runnableFiles = getRunnableProjectFiles();
+    if (graph.nodes.length <= 1 || runnableFiles.length === 0) return [];
+
+    const serviceRoots = new Map(graph.nodes.map(node => [node.id, getNodeServiceRoot(projectName, node)]));
+    const serviceRootSet = new Set(serviceRoots.values());
+    const isUnderGeneratedServiceRoot = (path: string) => serviceRootSet.has(path.split("/")[0] ?? "");
+    const sharedFiles = runnableFiles.filter(file => !isUnderGeneratedServiceRoot(file.path) && isSharedProjectFile(file.path));
+    return graph.nodes
+      .map(node => {
+        const serviceRoot = serviceRoots.get(node.id) ?? "";
+        const rootedFiles = serviceRoot
+          ? runnableFiles.filter(file => file.path.startsWith(`${serviceRoot}/`))
+          : [];
+        const serviceFiles = dedupeFiles([...rootedFiles, ...getWorkspaceFilesForNode(node, runnableFiles)]);
+        return {
+          id: node.id,
+          label: node.name,
+          files: dedupeFiles([...sharedFiles, ...serviceFiles]),
+        };
+      })
+      .filter(group => group.files.length > sharedFiles.length);
+  }, [getRunnableProjectFiles, graph.nodes]);
+
+  const activeServiceGroup = useMemo(
+    () => serviceFileGroups.find(group => group.id === activeWorkspaceGroupId) ?? null,
+    [activeWorkspaceGroupId, serviceFileGroups]
+  );
+
+  const activeServiceProjectName = useMemo(() => {
+    if (!activeServiceGroup) return projectName;
+    const node = graph.nodes.find(item => item.id === activeServiceGroup.id);
+    return node ? getNodeServiceRoot(projectName, node) : toServiceProjectRoot(projectName, activeServiceGroup.label);
+  }, [activeServiceGroup, graph.nodes, projectName]);
+
+  const getActiveGitFiles = useCallback(() => {
+    if (!activeServiceGroup) return getRunnableProjectFiles();
+    const node = graph.nodes.find(item => item.id === activeServiceGroup.id);
+    const serviceRoot = node ? getNodeServiceRoot(projectName, node) : toServiceProjectRoot(projectName, activeServiceGroup.label);
+    return stripServiceProjectRoot(activeServiceGroup.files, serviceRoot);
+  }, [activeServiceGroup, getRunnableProjectFiles, graph.nodes, projectName]);
+
+  const gitScopedFiles = useMemo(
+    () => serviceFileGroups.length > 1 && !activeServiceGroup ? [] : getActiveGitFiles(),
+    [activeServiceGroup, getActiveGitFiles, serviceFileGroups.length]
+  );
+
+  useEffect(() => {
+    if (activeWorkspaceGroupId === "all") return;
+    if (!serviceFileGroups.some(group => group.id === activeWorkspaceGroupId)) {
+      setActiveWorkspaceGroupId("all");
+    }
+  }, [activeWorkspaceGroupId, serviceFileGroups]);
+
+  const materializeProjectWorkspace = useCallback(async (filesOverride?: WorkspaceFile[], projectNameOverride?: string) => {
     const files = filesOverride ?? getRunnableProjectFiles();
     if (files.length === 0) {
       throw new Error("Generate or create project files first.");
@@ -1314,7 +1649,7 @@ export default function App() {
 
     return invoke<WorkspaceMaterializeResult>("workspace_materialize", {
       options: {
-        projectName,
+        projectName: projectNameOverride ?? projectName,
         files,
       },
     });
@@ -1342,18 +1677,18 @@ export default function App() {
     }
   }, [buildTool, getRunnableProjectFiles, projectName]);
 
-  const runTopbarGit = useCallback(async (args: string[], filesOverride?: WorkspaceFile[]) => {
+  const runTopbarGit = useCallback(async (args: string[], filesOverride?: WorkspaceFile[], projectNameOverride?: string) => {
     return invoke<GitRunResult>("git_run", {
       options: {
-        projectName,
-        files: filesOverride ?? getRunnableProjectFiles(),
+        projectName: projectNameOverride ?? activeServiceProjectName,
+        files: filesOverride ?? getActiveGitFiles(),
         args,
       },
     });
-  }, [getRunnableProjectFiles, projectName]);
+  }, [activeServiceProjectName, getActiveGitFiles]);
 
   const refreshTopbarGit = useCallback(async () => {
-    const files = getRunnableProjectFiles();
+    const files = getActiveGitFiles();
     try {
       const status = await runTopbarGit(["status", "--short", "--branch"], files);
       const branchList = await runTopbarGit(["branch", "--list"], files);
@@ -1375,24 +1710,43 @@ export default function App() {
       setGitRepositoryReady(false);
       setTopbarGitBranches([]);
     }
-  }, [getRunnableProjectFiles, runTopbarGit]);
+  }, [getActiveGitFiles, runTopbarGit]);
 
   useEffect(() => {
     void refreshTopbarGit();
   }, [refreshTopbarGit]);
 
   const runTopbarGitOperation = useCallback(async () => {
-    const runnableFiles = getRunnableProjectFiles();
+    const runnableFiles = getActiveGitFiles();
     const currentBranch = topbarGitCurrentBranch || "main";
     const targetBranch = topbarGitTargetBranch || currentBranch;
     const run = async (args: string[]) => runTopbarGit(args, runnableFiles);
 
     setTopbarGitBusy(true);
     try {
+      if (!activeServiceGroup && serviceFileGroups.length > 1 && ["set-origin", "pull", "push"].includes(topbarGitOperation)) {
+        alert("Select a service in the editor before setting a remote, pulling, or pushing. Each service uses its own repository.");
+        return;
+      }
+
       if (topbarGitOperation === "init") {
-        const result = await run(["init"]);
-        if (result?.ok || result?.isRepository) {
-          await run(["branch", "-M", currentBranch]);
+        const targets = !activeServiceGroup && serviceFileGroups.length > 1
+          ? serviceFileGroups
+          : [{ id: activeServiceGroup?.id ?? "all", label: activeServiceGroup?.label ?? projectName, files: runnableFiles }];
+
+        for (const target of targets) {
+          const targetNode = graph.nodes.find(node => node.id === target.id);
+          const targetProjectName = target.id === "all"
+            ? projectName
+            : targetNode
+              ? getNodeServiceRoot(projectName, targetNode)
+              : toServiceProjectRoot(projectName, target.label);
+          const result = await runTopbarGit(["init"], target.files, targetProjectName);
+          if (result?.ok || result?.isRepository) {
+            await runTopbarGit(["branch", "-M", currentBranch], target.files, targetProjectName);
+          }
+        }
+        if (targets.length > 0) {
           setGitRepositoryReady(true);
           setWorkspaceView("editor");
         }
@@ -1433,9 +1787,12 @@ export default function App() {
       setTopbarGitBusy(false);
     }
   }, [
-    getRunnableProjectFiles,
+    activeServiceGroup,
+    getActiveGitFiles,
+    projectName,
     refreshTopbarGit,
     runTopbarGit,
+    serviceFileGroups,
     topbarGitCurrentBranch,
     topbarGitOperation,
     topbarGitRemoteUrl,
@@ -1444,8 +1801,8 @@ export default function App() {
 
   const runProjectCommand = useCallback(async (mode: "build" | "run") => {
     try {
-      const files = getRunnableProjectFiles();
-      const { cwd } = await materializeProjectWorkspace(files);
+      const files = getActiveGitFiles();
+      const { cwd } = await materializeProjectWorkspace(files, activeServiceProjectName);
       const command = formatCommandLine(getProjectCommandParts(mode, buildTool, files));
 
       window.dispatchEvent(new CustomEvent("archiviz:terminal-command", {
@@ -1458,7 +1815,7 @@ export default function App() {
     } catch (error: any) {
       alert(error?.message ?? "Could not prepare the project workspace.");
     }
-  }, [buildTool, getRunnableProjectFiles, materializeProjectWorkspace]);
+  }, [activeServiceProjectName, buildTool, getActiveGitFiles, materializeProjectWorkspace]);
 
   useEffect(() => {
     if (!buildOnOpenRef.current || !activeProjectStarted) return;
@@ -1484,7 +1841,8 @@ export default function App() {
       return;
     }
 
-    const p = buildAIPrompt(graph, javaVersion, springBootVersion, projectName);
+    const existingFiles = workspaceFiles.length > 0 ? workspaceFiles : Object.values(nodeCode).flat();
+    const p = buildAIPrompt(graph, javaVersion, springBootVersion, projectName, buildTool, { existingFiles });
     setPrompt(p);
   };
 
@@ -1496,13 +1854,19 @@ export default function App() {
       return;
     }
 
+    const existingFiles = workspaceFiles.length > 0 ? workspaceFiles : Object.values(nodeCode).flat();
+    const shouldSplitByService = hasCanvasContent && graph.nodes.length > 1;
     let sourcePrompt = prompt.trim();
+    const servicePrompts = shouldSplitByService
+      ? buildServiceGenerationPrompts(graph, javaVersion, springBootVersion, projectName, buildTool, { existingFiles })
+      : [];
+
     if (!sourcePrompt && hasCanvasContent) {
-      sourcePrompt = buildAIPrompt(graph, javaVersion, springBootVersion, projectName);
+      sourcePrompt = buildAIPrompt(graph, javaVersion, springBootVersion, projectName, buildTool, { existingFiles });
       setPrompt(sourcePrompt);
     }
 
-    if (!sourcePrompt) {
+    if (!sourcePrompt && servicePrompts.length === 0) {
       alert("Write a prompt or add nodes before generating a project.");
       return;
     }
@@ -1510,31 +1874,115 @@ export default function App() {
     setProjectGenerating(true);
     projectGenerationInFlightRef.current = true;
     setGenError(null);
+    setGenerationProgress(null);
+    setBuildDiagnostics([]);
+    if (workspaceFiles.length === 0) {
+      setWorkspaceFiles([]);
+      setNodeCode({});
+    }
+    setWorkspaceFilesImported(false);
     const controller = new AbortController();
     abortRef.current = controller;
 
     try {
-      const projectPrompt = [
-        `Generate a complete ${buildTool} Java ${javaVersion} Spring Boot ${springBootVersion} project named "${projectName || "architecture-app"}".`,
-        "Return multiple files only with this exact marker before each file:",
-        "=== FILE: path/to/file.ext ===",
-        "Include build files, application entrypoint, configuration, and implementation files needed for the described architecture.",
-        "Do not wrap the answer in Markdown fences.",
-        "",
-        sourcePrompt,
-      ].join("\n");
+      const publishFiles = (nodeId: string | null, nextFiles: WorkspaceFile[]) => {
+        if (nextFiles.length === 0) return;
+        const visibleFiles = dedupeFiles(nextFiles);
+        setWorkspaceFiles(prev => dedupeFiles([...prev, ...visibleFiles]));
+        if (nodeId) {
+          setNodeCode(prev => ({
+            ...prev,
+            [nodeId]: dedupeFiles([...(prev[nodeId] ?? []), ...visibleFiles]),
+          }));
+          setActiveWorkspaceGroupId(nodeId);
+        }
+        setActiveWorkspacePath(visibleFiles.at(-1)?.path ?? null);
+        setWorkspaceView("editor");
+      };
 
-      const raw = await ai.callStream(
-        [{ role: "user", content: projectPrompt }],
-        () => {},
-        controller.signal
-      );
-      const files = dedupeFiles(parseMultiFileResponse(raw, "README.md"));
+      const streamPromptToEditor = async (
+        promptToRun: string,
+        progressMeta: {
+          nodeId: string | null;
+          serviceName: string;
+          currentServiceIndex: number;
+          totalServices: number;
+        },
+      ) => {
+        let raw = "";
+        const published = new Set<string>();
 
-      setWorkspaceFiles(files);
-      setActiveWorkspacePath(files[0]?.path ?? null);
-      setBuildDiagnostics([]);
-      setWorkspaceView("editor");
+        const publishCompletedFromRaw = (includeCurrentFile: boolean) => {
+          const parsed = parseStreamingFiles(raw, includeCurrentFile);
+          const nextFiles = parsed.files.filter(file => {
+            const key = `${file.path}:${file.content.length}`;
+            if (published.has(key)) return false;
+            published.add(key);
+            return true;
+          });
+          publishFiles(progressMeta.nodeId, nextFiles);
+          setGenerationProgress({
+            serviceName: progressMeta.serviceName,
+            currentFile: parsed.currentPath,
+            completedFiles: published.size,
+            totalServices: progressMeta.totalServices,
+            currentServiceIndex: progressMeta.currentServiceIndex,
+            streamPreview: raw.slice(-900),
+          });
+        };
+
+        const finalRaw = await ai.callStream(
+          [{ role: "user", content: promptToRun }],
+          token => {
+            raw += token;
+            publishCompletedFromRaw(false);
+          },
+          controller.signal
+        );
+
+        raw = finalRaw || raw;
+        publishCompletedFromRaw(true);
+      };
+
+      if (servicePrompts.length > 1) {
+        for (let index = 0; index < servicePrompts.length; index += 1) {
+          const step = servicePrompts[index];
+          const scopedPrompt = [
+            step.prompt,
+            sourcePrompt
+              ? [
+                  "# Original Full Architecture Prompt",
+                  "Use this as the orchestration context and user intent. Do not generate the whole system in this call; generate only the target service named above.",
+                  sourcePrompt,
+                ].join("\n")
+              : "",
+          ].filter(Boolean).join("\n\n");
+
+          await streamPromptToEditor(scopedPrompt, {
+            nodeId: step.nodeId,
+            serviceName: step.serviceName,
+            currentServiceIndex: index + 1,
+            totalServices: servicePrompts.length,
+          });
+        }
+      } else {
+        const projectPrompt = [
+          `Generate a complete ${buildTool} Java ${javaVersion} Spring Boot ${springBootVersion} project named "${projectName || "architecture-app"}".`,
+          "Return multiple files only with this exact marker before each file:",
+          "=== FILE: path/to/file.ext ===",
+          "Include build files, application entrypoint, configuration, and implementation files needed for the described architecture.",
+          "Do not wrap the answer in Markdown fences.",
+          "",
+          sourcePrompt,
+        ].join("\n");
+
+        await streamPromptToEditor(projectPrompt, {
+          nodeId: graph.nodes[0]?.id ?? null,
+          serviceName: projectName || graph.nodes[0]?.name || "Project",
+          currentServiceIndex: 1,
+          totalServices: 1,
+        });
+      }
     } catch (err: any) {
       if (err?.name !== "AbortError") {
         console.error("[project-generator]", err);
@@ -1543,8 +1991,9 @@ export default function App() {
     } finally {
       projectGenerationInFlightRef.current = false;
       setProjectGenerating(false);
+      setGenerationProgress(null);
     }
-  }, [ai, buildTool, graph, hasCanvasContent, javaVersion, projectName, prompt, settings, springBootVersion]);
+  }, [ai, buildTool, graph, hasCanvasContent, javaVersion, nodeCode, projectName, prompt, settings, springBootVersion, workspaceFiles]);
 
   const runCodeFixAgent = useCallback(async () => {
     if (codeAgentRunning) return;
@@ -1680,8 +2129,82 @@ export default function App() {
     };
   }, [completeWireFromPointer, drag, wire, pan, movePointerInteraction]);
 
-  // suppress unused warning — language is kept for potential future use
-  void language;
+  const nodeFilesById = useMemo(() => {
+    const allGeneratedFiles = workspaceFiles.length > 0 ? workspaceFiles : Object.values(nodeCode).flat();
+    const entries = graph.nodes.map(node => {
+      const directFiles = nodeCode[node.id];
+      const inferredFiles = directFiles?.length ? directFiles : getWorkspaceFilesForNode(node, allGeneratedFiles);
+      return [node.id, inferredFiles] as const;
+    });
+
+    return Object.fromEntries(entries) as Record<string, WorkspaceFile[]>;
+  }, [graph.nodes, nodeCode, workspaceFiles]);
+
+  const generatedNodeIds = useMemo(
+    () => new Set(Object.entries(nodeFilesById).filter(([, files]) => files.length > 0).map(([id]) => id)),
+    [nodeFilesById]
+  );
+
+  // How many expandable class files each node has
+  const nodeClassCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const node of graph.nodes) {
+      const sourceFiles = node.config?.sourceFiles;
+      if (Array.isArray(sourceFiles) && sourceFiles.length > 0) {
+        counts[node.id] = (sourceFiles as string[]).length;
+      }
+    }
+    return counts;
+  }, [graph.nodes]);
+
+  const onExpandClasses = (nodeId: string) => {
+    const alreadyExpanded = expandedNodeIds.has(nodeId);
+
+    if (alreadyExpanded) {
+      // Collapse: remove all class nodes that belong to this parent
+      setGraph(g => ({
+        ...g,
+        nodes: g.nodes.filter(n => n.config?.parentNodeId !== nodeId),
+        edges: g.edges.filter(e => {
+          const fromNode = g.nodes.find(n => n.id === e.from);
+          const toNode = g.nodes.find(n => n.id === e.to);
+          return fromNode?.config?.parentNodeId !== nodeId && toNode?.config?.parentNodeId !== nodeId;
+        }),
+      }));
+      setExpandedNodeIds(prev => { const next = new Set(prev); next.delete(nodeId); return next; });
+      return;
+    }
+
+    // Expand: create class nodes from sourceFiles
+    const parentNode = graph.nodes.find(n => n.id === nodeId);
+    if (!parentNode) return;
+
+    const sourcePaths = parentNode.config?.sourceFiles as string[] | undefined;
+    if (!sourcePaths?.length) return;
+
+    const allFiles = workspaceFiles.length > 0 ? workspaceFiles : Object.values(nodeCode).flat();
+    const COLS = 3;
+    const COL_W = 185;
+    const ROW_H = 110;
+
+    const classNodes: NodeData[] = sourcePaths.map((path, i) => {
+      const file = allFiles.find(f => f.path === path);
+      const analyzed = analyzeSourceFile(path, file?.content ?? "");
+      const col = i % COLS;
+      const row = Math.floor(i / COLS);
+      return {
+        id: `class:${nodeId}:${path}`,
+        type: analyzed.nodeType,
+        name: analyzed.displayName,
+        x: parentNode.x + col * COL_W,
+        y: parentNode.y + 110 + row * ROW_H,
+        config: { parentNodeId: nodeId, isClassNode: true },
+      };
+    });
+
+    setGraph(g => ({ ...g, nodes: [...g.nodes, ...classNodes] }));
+    setExpandedNodeIds(prev => new Set([...prev, nodeId]));
+  };
 
   /* =======================
      UI
@@ -1712,7 +2235,7 @@ export default function App() {
             <div className="startup-brand">ARCH</div>
             <div className="startup-copy">
               <h1 id="startup-title">Choose a project</h1>
-              <p>Open a saved architecture workspace or create a fresh Spring Boot project.</p>
+              <p>Open a saved architecture workspace, import an IDE codebase, or create a fresh Spring Boot project.</p>
             </div>
             <div className="startup-actions">
               <button className="btn btn-primary startup-action" onClick={() => setShowStartupProjectConfig(true)}>
@@ -1720,6 +2243,9 @@ export default function App() {
               </button>
               <button className="btn startup-action" onClick={onOpenSavedProject}>
                 Open Project
+              </button>
+              <button className="btn startup-action" onClick={onImportIdeProject} disabled={importingProject}>
+                {importingProject ? "Importing..." : "Import IDE Project"}
               </button>
             </div>
             {autosavedProject && (
@@ -1798,6 +2324,8 @@ export default function App() {
         setJavaVersion={setJavaVersion}
         springBootVersion={springBootVersion}
         setSpringBootVersion={setSpringBootVersion}
+        detectedLanguage={language}
+        detectedFramework={detectedFramework}
         projectName={projectName}
         setProjectName={setProjectName}
         buildTool={buildTool}
@@ -1806,6 +2334,7 @@ export default function App() {
         onCreateProject={createNewProject}
         onOpenProject={onOpenSavedProject}
         onImportProject={onLoadProject}
+        onAddServiceProject={onAddServiceProject}
         onSaveProject={saveProject}
         onExportProject={exportProject}
         gitRepositoryReady={gitRepositoryReady}
@@ -1815,6 +2344,7 @@ export default function App() {
         gitRemoteUrl={topbarGitRemoteUrl}
         setGitRemoteUrl={setTopbarGitRemoteUrl}
         gitCurrentBranch={topbarGitCurrentBranch}
+        gitRepositoryName={activeServiceGroup ? activeServiceProjectName : undefined}
         gitTargetBranch={topbarGitTargetBranch}
         setGitTargetBranch={setTopbarGitTargetBranch}
         gitBranches={topbarGitBranches}
@@ -1862,7 +2392,11 @@ export default function App() {
                 className="workspace-side-pane workspace-side-pane--resizable"
                 style={{ width: paletteWidth, flexBasis: paletteWidth }}
               >
-                <Palette embedded workspaceFiles={workspaceFiles} />
+                <Palette
+                  embedded
+                  workspaceFiles={workspaceFiles}
+                  onDropNode={onPaletteNodeDrop}
+                />
                 <div
                   className="panel-resize-handle panel-resize-handle--right"
                   onPointerDown={startPaletteResize}
@@ -1881,6 +2415,10 @@ export default function App() {
                   activePath={activeWorkspacePath}
                   onActivePathChange={setActiveWorkspacePath}
                   onFilesChange={setWorkspaceFiles}
+                  fileGroups={serviceFileGroups}
+                  activeGroupId={activeWorkspaceGroupId}
+                  onActiveGroupChange={setActiveWorkspaceGroupId}
+                  projectName={projectName || undefined}
                   editorTheme={colorScheme}
                   editorSettings={editorSettings}
                   showGitFolder={gitRepositoryReady}
@@ -1905,7 +2443,7 @@ export default function App() {
                   onRename={onRename}
                   onConfigure={setConfiguringNodeId}
                   onViewCode={setViewingNodeId}
-                  generatedNodeIds={new Set(Object.keys(nodeCode))}
+                  generatedNodeIds={generatedNodeIds}
                   startWire={startWire}
                   moveWire={movePointerInteraction}
                   onNodePointerDown={onNodePointerDown}
@@ -1916,6 +2454,9 @@ export default function App() {
                   onZoomOut={zoomOut}
                   onResetCamera={resetCamera}
                   onClearCanvas={clearCanvas}
+                  nodeClassCounts={nodeClassCounts}
+                  expandedNodeIds={expandedNodeIds}
+                  onExpandClasses={onExpandClasses}
                 />
               )}
             </div>
@@ -1923,7 +2464,7 @@ export default function App() {
 
           <TerminalDock
             terminalSettings={terminalSettings}
-            getWorkspaceCwd={async () => (await materializeProjectWorkspace()).cwd}
+          getWorkspaceCwd={async () => (await materializeProjectWorkspace(getActiveGitFiles(), activeServiceProjectName)).cwd}
           />
         </div>
 
@@ -1933,8 +2474,8 @@ export default function App() {
           prompt={prompt}
           setPrompt={setPrompt}
           filesCount={workspaceFiles.length}
-          projectName={projectName}
-          files={getRunnableProjectFiles()}
+          projectName={activeServiceProjectName}
+          files={gitScopedFiles}
           gitSettings={gitSettings}
           gitRepositoryReady={gitRepositoryReady}
           onGitRepositoryChange={setGitRepositoryReady}
@@ -1946,7 +2487,7 @@ export default function App() {
           canGenerateProject={!!settings && (hasPrompt || hasCanvasContent)}
           codeAgentRunning={codeAgentRunning}
           codeAgentOutput={codeAgentOutput}
-          canRunCodeAgent={!!settings && getRunnableProjectFiles().length > 0}
+          canRunCodeAgent={!!settings && getActiveGitFiles().length > 0}
           aiModelLabel={settings?.model || settings?.provider || ""}
         />
       </div>
@@ -1992,7 +2533,7 @@ export default function App() {
 
       {viewingNodeId && (() => {
         const node  = graph.nodes.find(n => n.id === viewingNodeId);
-        const files = nodeCode[viewingNodeId];
+        const files = nodeFilesById[viewingNodeId];
         return node && files ? (
           <NodeCodeModal
             nodeName={node.name}
@@ -2039,6 +2580,37 @@ export default function App() {
           onNewMessage={() => setChatUnread(v => v + 1)}
           workspaceFiles={workspaceFiles}
         />
+      )}
+
+      {generationProgress && (
+        <div className="gen-progress-hud">
+          <div className="gen-progress-header">
+            <span className="gen-progress-label">Generating service</span>
+            <span className="gen-progress-count">
+              {generationProgress.currentServiceIndex}/{generationProgress.totalServices}
+              {" · "}
+              {generationProgress.completedFiles} file{generationProgress.completedFiles === 1 ? "" : "s"}
+            </span>
+          </div>
+          <div className="gen-progress-node">
+            {generationProgress.serviceName}
+            {generationProgress.currentFile ? ` · ${generationProgress.currentFile}` : ""}
+          </div>
+          <div className="gen-progress-bar-track">
+            <div
+              className="gen-progress-bar-fill"
+              style={{
+                width: `${Math.max(
+                  8,
+                  Math.round((generationProgress.currentServiceIndex / generationProgress.totalServices) * 100),
+                )}%`,
+              }}
+            />
+          </div>
+          {generationProgress.streamPreview && (
+            <pre className="gen-progress-stream">{generationProgress.streamPreview}</pre>
+          )}
+        </div>
       )}
 
       {genError && (

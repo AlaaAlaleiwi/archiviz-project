@@ -1,7 +1,13 @@
-import { useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import "../styles.css";
-import { getClassMap, ROLE_COLOR, type ClassNode } from "../utils/classMap";
+import ClassNetwork3D from "./ClassNetwork3D";
+import { ROLE_COLOR } from "../utils/classMap";
+import {
+  buildClassNetwork,
+  extractClassMethodFlows,
+  type ClassNetworkNode,
+} from "../utils/classNetwork";
 
 export type CodeFile = { path: string; content: string };
 
@@ -13,198 +19,117 @@ interface Props {
   onSave?: (updatedFiles: CodeFile[]) => void;
 }
 
+function roleColor(role: ClassNetworkNode["role"]) {
+  if (role in ROLE_COLOR) return ROLE_COLOR[role as keyof typeof ROLE_COLOR];
+  const fallback: Record<string, string> = {
+    dto: "#22c55e",
+    test: "#a78bfa",
+    migration: "#f97316",
+    unknown: "var(--muted)",
+  };
+  return fallback[role] ?? "var(--accent)";
+}
+
 function basename(path: string) {
   return path.split("/").pop() ?? path;
 }
 
-function stripExt(name: string) {
-  return name.replace(/\.[^.]+$/, "");
-}
+export default function NodeCodeModal({ nodeName, nodeType, files, onClose }: Props) {
+  const [selectedNode, setSelectedNode] = useState<ClassNetworkNode | null>(null);
+  const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState(true);
 
-function isTestFile(path: string) {
-  const p = path.toLowerCase();
-  return p.includes("test") || p.includes("spec") || p.includes("__tests__");
-}
-
-function matchFileToClass(path: string, cls: ClassNode): boolean {
-  const name = basename(path).toLowerCase();
-  return (
-    name.includes(cls.abbr.toLowerCase()) ||
-    name.includes(cls.label.toLowerCase().replace(/\s/g, ""))
+  const classNetwork = useMemo(() => buildClassNetwork(files, nodeType), [files, nodeType]);
+  const methodFlows = useMemo(
+    () => selectedNode ? extractClassMethodFlows(selectedNode.file.content) : [],
+    [selectedNode]
   );
-}
 
-export default function NodeCodeModal({ nodeName, nodeType, files, onClose, onSave }: Props) {
-  const classMap = getClassMap(nodeType);
-  const [edited, setEdited]   = useState<CodeFile[]>(files);
-  const [activePath, setActivePath] = useState<string | null>(files[0]?.path ?? null);
-  const [copied, setCopied]   = useState(false);
-  const [saved, setSaved]     = useState(false);
+  const selectNode = useCallback((networkNode: ClassNetworkNode) => {
+    setSelectedNode(networkNode);
+    setSelectedEdgeId(null);
+  }, []);
 
-  const isDirty = edited.some((f, i) => f.content !== files[i]?.content);
-  const activeFile = edited.find(f => f.path === activePath) ?? null;
-
-  const testFiles = edited.filter(f => isTestFile(f.path));
-  const implFiles = edited.filter(f => !isTestFile(f.path));
-
-  // Map class chain entries to their generated files
-  const chainEntries: { cls: ClassNode; file: CodeFile | null }[] = classMap
-    ? classMap.map(cls => ({ cls, file: implFiles.find(f => matchFileToClass(f.path, cls)) ?? null }))
-    : [];
-
-  const matchedPaths = new Set(chainEntries.map(e => e.file?.path).filter(Boolean));
-  const supportFiles = implFiles.filter(f => !matchedPaths.has(f.path));
-
-  const handleContentChange = (val: string) => {
-    if (!activePath) return;
-    setEdited(prev => prev.map(f => f.path === activePath ? { ...f, content: val } : f));
-  };
-
-  const handleCopy = () => {
-    if (!activeFile) return;
-    navigator.clipboard.writeText(activeFile.content).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    });
-  };
-
-  const handleSave = () => {
-    onSave?.(edited);
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
-  };
+  const graph = (
+    <ClassNetwork3D
+      network={classNetwork}
+      activeNodeId={selectedNode?.id ?? null}
+      selectedEdgeId={selectedEdgeId}
+      onSelectNode={selectNode}
+      onSelectEdge={setSelectedEdgeId}
+      getRoleColor={roleColor}
+    />
+  );
 
   const modal = (
     <div className="modal" onClick={onClose}>
-      <div className="nim-panel" onClick={e => e.stopPropagation()}>
-
-        {/* ── header ── */}
-        <div className="nim-header">
+      <div
+        className={`class-graph-modal ${expanded ? "class-graph-modal--expanded" : ""}`}
+        onClick={event => event.stopPropagation()}
+      >
+        <div className="class-graph-topbar">
           <div>
-            <div className="nim-title">
-              {nodeName}
-              {isDirty && <span className="nim-dirty">(unsaved changes)</span>}
-            </div>
-            <div className="nim-subtitle">{nodeType} · {edited.length} file{edited.length !== 1 ? "s" : ""}</div>
+            <div className="class-graph-title">{nodeName}</div>
+            <div className="class-graph-subtitle">{nodeType} · rotate, pan, zoom, then click a class</div>
           </div>
-          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-            {activeFile && (
-              <button className="ncm-copy-btn" onClick={handleCopy}>
-                {copied ? "✓ Copied" : "Copy"}
-              </button>
-            )}
-            {onSave && isDirty && (
-              <button className="ncm-copy-btn" onClick={handleSave}>
-                {saved ? "✓ Saved" : "Save"}
-              </button>
-            )}
-            <button className="np-close" onClick={onClose}>✕</button>
+          <div className="class-graph-actions">
+            <button type="button" className="class-graph-action" onClick={() => setExpanded(prev => !prev)}>
+              {expanded ? "Compact" : "Expand"}
+            </button>
+            <button type="button" className="np-close" onClick={onClose}>✕</button>
           </div>
         </div>
 
-        {/* ── class diagram ── */}
-        <div className="nim-diagram">
-          {/* Main chain */}
-          <div className="nim-chain">
-            {(classMap ? chainEntries : implFiles.map(f => ({ cls: null as any, file: f }))).map((entry, i) => {
-              const { cls, file } = entry;
-              const color = cls ? ROLE_COLOR[cls.role as keyof typeof ROLE_COLOR] : "var(--accent)";
-              const label = cls ? cls.abbr : stripExt(basename(file!.path));
-              const sublabel = cls ? cls.label : undefined;
-              const isActive = file && activePath === file.path;
-              const hasFile = !!file;
+        <div className="class-graph-stage">
+          {classNetwork.nodes.length > 0 ? graph : (
+            <div className="class-graph-empty">No source files available for this node yet.</div>
+          )}
 
-              return (
-                <div key={cls?.abbr ?? file?.path ?? i} className="nim-chain-item">
-                  {i > 0 && <div className="nim-chain-connector"><span className="nim-chain-arrow">→</span></div>}
-                  <button
-                    className={`nim-class-box ${isActive ? "nim-class-box--active" : ""} ${!hasFile ? "nim-class-box--missing" : ""}`}
-                    style={{
-                      borderColor: color,
-                      ...(isActive ? { background: `${color}1a`, boxShadow: `0 0 0 1px ${color}44` } : {}),
-                    }}
-                    onClick={() => file && setActivePath(file.path)}
-                    title={file?.path ?? (cls ? `${cls.label} — not generated` : "")}
-                    disabled={!hasFile}
-                  >
-                    <span className="nim-class-abbr" style={{ color }}>{label}</span>
-                    {sublabel && <span className="nim-class-sublabel">{sublabel}</span>}
-                  </button>
+          {selectedNode && (
+            <div className="class-node-popup">
+              <div className="class-node-popup-header">
+                <div>
+                  <div className="class-node-popup-title">{selectedNode.name}</div>
+                  <div className="class-node-popup-path">{basename(selectedNode.file.path)}</div>
                 </div>
-              );
-            })}
-          </div>
-
-          {/* Support files (DTOs, migrations, exceptions…) */}
-          {supportFiles.length > 0 && (
-            <div className="nim-row">
-              {supportFiles.map(f => (
                 <button
-                  key={f.path}
-                  className={`nim-chip ${activePath === f.path ? "nim-chip--active" : ""}`}
-                  onClick={() => setActivePath(f.path)}
-                  title={f.path}
+                  type="button"
+                  className="class-node-popup-close"
+                  onClick={() => setSelectedNode(null)}
+                  aria-label="Close class details"
                 >
-                  {stripExt(basename(f.path))}
+                  ✕
                 </button>
-              ))}
-            </div>
-          )}
+              </div>
 
-          {/* Test files */}
-          {testFiles.length > 0 && (
-            <div className="nim-row">
-              <span className="nim-row-label">Tests</span>
-              {testFiles.map(f => (
-                <button
-                  key={f.path}
-                  className={`nim-chip nim-chip--test ${activePath === f.path ? "nim-chip--active" : ""}`}
-                  onClick={() => setActivePath(f.path)}
-                  title={f.path}
-                >
-                  {stripExt(basename(f.path))}
-                </button>
-              ))}
+              <div className="class-method-section">
+                <div className="class-method-heading">Methods</div>
+                {methodFlows.length > 0 ? (
+                  methodFlows.map(method => (
+                    <div key={method.signature} className="class-method-card">
+                      <div className="class-method-name">{method.name}</div>
+                      <div className="class-method-row">
+                        <span>Input</span>
+                        <code>{method.input}</code>
+                      </div>
+                      <div className="class-method-row">
+                        <span>Output</span>
+                        <code>{method.output}</code>
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <div className="class-method-empty">No methods detected in this class.</div>
+                )}
+              </div>
+
+              <div className="class-code-section">
+                <div className="class-method-heading">Code</div>
+                <pre className="class-code-block">{selectedNode.file.content}</pre>
+              </div>
             </div>
           )}
         </div>
-
-        {/* ── active file path ── */}
-        {activeFile && <div className="ncm-filepath">{activeFile.path}</div>}
-
-        {/* ── code editor ── */}
-        <div className="ncm-code-body">
-          {activeFile ? (
-            <textarea
-              key={activePath}
-              className="ncm-code-pre"
-              value={activeFile.content}
-              onChange={e => handleContentChange(e.target.value)}
-              spellCheck={false}
-              style={{
-                flex: 1,
-                resize: "none",
-                border: "none",
-                outline: "none",
-                background: "transparent",
-                width: "100%",
-                minHeight: 380,
-                fontFamily: 'ui-monospace, "Cascadia Code", "Fira Code", monospace',
-                fontSize: "12.5px",
-                lineHeight: 1.65,
-                color: "var(--text)",
-                whiteSpace: "pre",
-                overflowWrap: "normal",
-                overflowX: "auto",
-                tabSize: 2,
-                caretColor: "var(--accent)",
-              }}
-            />
-          ) : (
-            <div className="nim-empty-state">Select a class above to view its code</div>
-          )}
-        </div>
-
       </div>
     </div>
   );

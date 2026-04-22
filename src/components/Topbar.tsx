@@ -1,6 +1,6 @@
 import "../styles.css";
 import { useState, useRef, useEffect } from "react";
-import type { JavaVersion, SpringBootVersion, BuildTool } from "../types";
+import type { JavaVersion, SpringBootVersion, BuildTool, Language } from "../types";
 
 const JAVA_VERSIONS: JavaVersion[]        = ["17", "21", "25"];
 const SPRING_VERSIONS: SpringBootVersion[] = ["3.2", "3.3", "3.4"];
@@ -223,6 +223,8 @@ interface TopbarProps {
   setJavaVersion: (v: JavaVersion) => void;
   springBootVersion: SpringBootVersion;
   setSpringBootVersion: (v: SpringBootVersion) => void;
+  detectedLanguage?: Language;
+  detectedFramework?: string;
   projectName: string;
   setProjectName: (n: string) => void;
   buildTool: BuildTool;
@@ -231,6 +233,7 @@ interface TopbarProps {
   onCreateProject: () => void;
   onOpenProject: () => void;
   onImportProject: () => void;
+  onAddServiceProject?: () => void;
   onSaveProject: () => void;
   onExportProject: () => void;
   gitRepositoryReady?: boolean;
@@ -240,6 +243,7 @@ interface TopbarProps {
   gitRemoteUrl?: string;
   setGitRemoteUrl?: (url: string) => void;
   gitCurrentBranch?: string;
+  gitRepositoryName?: string;
   gitTargetBranch?: string;
   setGitTargetBranch?: (branch: string) => void;
   gitBranches?: string[];
@@ -252,10 +256,12 @@ export default function Topbar({
   hasUnsavedChanges, autoSaveLabel, importingProject,
   javaVersion, setJavaVersion,
   springBootVersion, setSpringBootVersion,
+  detectedLanguage = "java",
+  detectedFramework,
   projectName, setProjectName,
   buildTool, setBuildTool,
   onOpenSettings,
-  onCreateProject, onOpenProject, onImportProject,
+  onCreateProject, onOpenProject, onImportProject, onAddServiceProject,
   onSaveProject, onExportProject,
   gitRepositoryReady = false,
   gitBusy = false,
@@ -264,6 +270,7 @@ export default function Topbar({
   gitRemoteUrl = "",
   setGitRemoteUrl,
   gitCurrentBranch = "main",
+  gitRepositoryName,
   gitTargetBranch = "main",
   setGitTargetBranch,
   gitBranches = [],
@@ -325,6 +332,12 @@ export default function Topbar({
               items={[
                 { label: "Open Project",   hint: "Load a saved .archbuilder.json file",      onClick: onOpenProject },
                 { label: "Import Folder",  hint: importingProject ? "Importing…" : "Scan an existing code directory", onClick: onImportProject, disabled: importingProject },
+                {
+                  label: "Add Service Folder",
+                  hint: "Scan code and add it as a new canvas service",
+                  onClick: () => onAddServiceProject?.(),
+                  disabled: importingProject || !onAddServiceProject,
+                },
               ]}
             />
 
@@ -354,13 +367,29 @@ export default function Topbar({
             </button>
           </div>
           <div className="topbar-project-meta">
-            <span className="topbar-lang-badge">☕</span>
-            <span className="topbar-meta-sep">·</span>
-            <span className="topbar-meta-text">Java {javaVersion}</span>
-            <span className="topbar-meta-sep">·</span>
-            <span className="topbar-meta-text">Spring Boot {springBootVersion}</span>
-            <span className="topbar-meta-sep">·</span>
-            <span className="topbar-meta-text">{buildTool}</span>
+            {detectedLanguage === "java" ? (
+              <>
+                <span className="topbar-lang-badge">☕</span>
+                <span className="topbar-meta-sep">·</span>
+                <span className="topbar-meta-text">Java {javaVersion}</span>
+                <span className="topbar-meta-sep">·</span>
+                <span className="topbar-meta-text">{detectedFramework || `Spring Boot ${springBootVersion}`}</span>
+                <span className="topbar-meta-sep">·</span>
+                <span className="topbar-meta-text">{buildTool}</span>
+              </>
+            ) : (
+              <>
+                <span className="topbar-lang-badge">◆</span>
+                <span className="topbar-meta-sep">·</span>
+                <span className="topbar-meta-text">{detectedLanguage}</span>
+                {detectedFramework && (
+                  <>
+                    <span className="topbar-meta-sep">·</span>
+                    <span className="topbar-meta-text">{detectedFramework}</span>
+                  </>
+                )}
+              </>
+            )}
             {autoSaveLabel && (
               <>
                 <span className="topbar-meta-sep">·</span>
@@ -377,7 +406,7 @@ export default function Topbar({
               <div className="topbar-repo-status">
                 <span className={`topbar-repo-dot ${gitRepositoryReady ? "ready" : ""}`} />
                 <span className="topbar-repo-name">
-                  {gitRepositoryReady ? (projectName || "untitled") : "No repository"}
+                  {gitRepositoryReady ? (gitRepositoryName || projectName || "untitled") : "No repository"}
                 </span>
                 {gitRepositoryReady && (
                   <>

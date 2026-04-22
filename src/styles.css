@@ -727,6 +727,42 @@ body {
   box-shadow: 0 6px 20px rgba(0, 212, 255, 0.12);
 }
 
+.paletteItem:active {
+  cursor: grabbing;
+}
+
+.paletteDragPreview {
+  position: fixed;
+  z-index: 10000;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 220px;
+  min-height: 40px;
+  padding: 7px 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 48%, var(--border));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--panel) 92%, var(--accent) 8%);
+  color: var(--text);
+  box-shadow: 0 16px 30px var(--shadow-color);
+  pointer-events: none;
+  transform: translate(-50%, -50%);
+}
+
+.paletteDragPreviewIcon {
+  flex: 0 0 auto;
+  font-size: 16px;
+}
+
+.paletteDragPreviewLabel {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 700;
+}
+
 .paletteItem.frontend {
   border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
 }
@@ -814,6 +850,22 @@ body {
 
 .canvas:active { cursor: grabbing; }
 
+.canvas--drop-active {
+  cursor: copy;
+}
+
+.canvas--drop-active::after {
+  content: "";
+  position: absolute;
+  inset: 12px;
+  z-index: 30;
+  pointer-events: none;
+  border: 1px dashed color-mix(in srgb, var(--accent) 70%, white 10%);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+  box-shadow: inset 0 0 28px color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
 .world {
   position: absolute;
   inset: 0;
@@ -868,6 +920,13 @@ body {
 
 .cameraBadge { font-size: 12px; font-weight: 700; }
 
+.cameraBadge--compact {
+  min-height: 34px;
+  padding: 0 10px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
 .cameraButton {
   min-width: 34px;
   height: 34px;
@@ -912,6 +971,11 @@ body {
   animation: flow 1s linear infinite;
 }
 
+.edge--large-graph {
+  opacity: 0.62;
+  filter: none;
+}
+
 @keyframes flow {
   from { stroke-dashoffset: 0; }
   to   { stroke-dashoffset: -12; }
@@ -940,6 +1004,20 @@ body {
 }
 
 @keyframes dash { to { stroke-dashoffset: -12; } }
+
+.canvas-cull-indicator {
+  position: absolute;
+  z-index: 30;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--canvas-hud);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  pointer-events: none;
+  box-shadow: 0 12px 24px var(--shadow-color);
+}
 
 /* =========================
    NODE
@@ -1233,10 +1311,108 @@ body {
   margin-bottom: 3px;
 }
 
+.file-tree-project-root {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 6px 5px 4px;
+  margin-bottom: 2px;
+  border-radius: 5px;
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--text);
+  user-select: none;
+  letter-spacing: 0.01em;
+}
+
+.file-tree-project-root-icon {
+  width: 16px;
+  height: 14px;
+  flex: 0 0 16px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 36%, var(--border));
+  position: relative;
+}
+
+.file-tree-project-root-icon::before {
+  content: "";
+  position: absolute;
+  top: -4px;
+  left: 1px;
+  width: 6px;
+  height: 3px;
+  border-radius: 1px 2px 0 0;
+  background: color-mix(in srgb, var(--accent) 36%, var(--border));
+}
+
+.file-tree-project-root-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+
 .file-explorer-subtitle {
   color: var(--muted);
   font-size: 10px;
   line-height: 1.2;
+}
+
+.service-group-tabs {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin: 0 -2px 8px;
+  padding: 7px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--panel2) 70%, var(--panel));
+}
+
+.service-group-tab {
+  width: 100%;
+  min-height: 32px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  text-align: left;
+}
+
+.service-group-tab span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.service-group-tab small {
+  min-width: 20px;
+  color: inherit;
+  font-size: 10px;
+  font-weight: 800;
+  text-align: right;
+}
+
+.service-group-tab:hover {
+  border-color: var(--border);
+  color: var(--text);
+}
+
+.service-group-tab.active {
+  border-color: color-mix(in srgb, var(--accent) 44%, var(--border));
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+  color: var(--accent);
 }
 
 .file-explorer-actions {
@@ -4706,6 +4882,230 @@ body  { background: var(--bg); color: var(--text); }
 /* =========================
    NODE INSPECTOR MODAL (nim)
 ========================= */
+.class-graph-modal {
+  width: min(1180px, calc(100vw - 36px));
+  height: min(760px, calc(100vh - 36px));
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--panel);
+  box-shadow: 0 24px 60px rgba(0,0,0,0.55);
+}
+
+.class-graph-modal--expanded {
+  width: calc(100vw - 28px);
+  height: calc(100vh - 28px);
+}
+
+.class-graph-topbar {
+  flex: 0 0 auto;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  min-height: 58px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--panel2) 82%, var(--panel));
+}
+
+.class-graph-title {
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 850;
+}
+
+.class-graph-subtitle {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.class-graph-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.class-graph-action {
+  min-height: 32px;
+  padding: 0 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--border));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.class-graph-action:hover {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.class-graph-stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  background: var(--panel2);
+}
+
+.class-graph-stage .nim-network-3d {
+  height: 100%;
+  min-height: 0;
+  border: none;
+  border-radius: 0;
+}
+
+.class-graph-empty {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.class-node-popup {
+  position: absolute;
+  top: 18px;
+  right: 18px;
+  width: min(440px, calc(100% - 36px));
+  max-height: calc(100% - 36px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border));
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--panel) 94%, black 6%);
+  box-shadow: 0 18px 46px rgba(0,0,0,0.48);
+}
+
+.class-node-popup-header {
+  flex: 0 0 auto;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 13px 14px 11px;
+  border-bottom: 1px solid var(--border);
+}
+
+.class-node-popup-title {
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 850;
+}
+
+.class-node-popup-path {
+  margin-top: 3px;
+  color: var(--muted);
+  font-family: ui-monospace, monospace;
+  font-size: 10px;
+}
+
+.class-node-popup-close {
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.class-node-popup-close:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.class-method-section,
+.class-code-section {
+  padding: 12px 14px;
+}
+
+.class-method-section {
+  flex: 0 0 auto;
+  max-height: 260px;
+  overflow: auto;
+  border-bottom: 1px solid var(--border);
+}
+
+.class-code-section {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.class-method-heading {
+  margin-bottom: 8px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 850;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.class-method-card {
+  display: grid;
+  gap: 6px;
+  padding: 9px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--panel2) 78%, transparent);
+}
+
+.class-method-card + .class-method-card {
+  margin-top: 8px;
+}
+
+.class-method-name {
+  color: var(--accent);
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.class-method-row {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+}
+
+.class-method-row span {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.class-method-row code {
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  color: var(--text);
+  font-family: ui-monospace, monospace;
+  font-size: 10.5px;
+  line-height: 1.35;
+}
+
+.class-method-empty {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.class-code-block {
+  margin: 0;
+  color: var(--text);
+  font-family: ui-monospace, "Cascadia Code", "Fira Code", monospace;
+  font-size: 11px;
+  line-height: 1.55;
+  white-space: pre;
+}
+
 .nim-panel {
   width: 860px;
   max-width: calc(100vw - 48px);
@@ -4717,6 +5117,11 @@ body  { background: var(--bg); color: var(--text); }
   flex-direction: column;
   overflow: hidden;
   box-shadow: 0 24px 60px rgba(0,0,0,0.55);
+}
+
+.nim-panel--expanded {
+  width: min(1280px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
 }
 
 .nim-header {
@@ -4759,6 +5164,265 @@ body  { background: var(--bg); color: var(--text); }
   flex-direction: column;
   gap: 10px;
   flex-shrink: 0;
+}
+
+.nim-diagram--expanded {
+  gap: 12px;
+  padding: 18px 22px 14px;
+}
+
+.nim-network-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.nim-network-heading {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.nim-network-caption {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.nim-expand-btn {
+  min-width: 78px;
+  min-height: 30px;
+  border: 1px solid color-mix(in srgb, var(--accent) 36%, var(--border));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.nim-expand-btn:hover {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border-color: var(--accent);
+}
+
+.nim-network-wrap {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(220px, 280px);
+  gap: 14px;
+  align-items: stretch;
+}
+
+.nim-diagram--expanded .nim-network-wrap {
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 340px);
+}
+
+.nim-network,
+.nim-network-3d {
+  width: 100%;
+  min-height: 300px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: transparent;
+}
+
+.nim-network-3d {
+  position: relative;
+  overflow: hidden;
+  cursor: grab;
+}
+
+.nim-network-3d:active {
+  cursor: grabbing;
+}
+
+.nim-network-3d canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.nim-diagram--expanded .nim-network,
+.nim-diagram--expanded .nim-network-3d {
+  min-height: 520px;
+}
+
+.nim-network-edge {
+  color: color-mix(in srgb, var(--muted) 72%, transparent);
+  cursor: pointer;
+}
+
+.nim-network-edge-line {
+  stroke: currentColor;
+  stroke-width: 1.8;
+  fill: none;
+}
+
+.nim-network-edge-hit {
+  stroke: transparent;
+  stroke-width: 16;
+  fill: none;
+  pointer-events: stroke;
+}
+
+.nim-network-edge-dot {
+  fill: var(--panel);
+  stroke: currentColor;
+  stroke-width: 1.5;
+  pointer-events: none;
+}
+
+.nim-network-edge.active,
+.nim-network-edge:hover {
+  color: color-mix(in srgb, var(--accent) 72%, var(--muted));
+}
+
+.nim-network-edge.selected {
+  color: var(--accent);
+}
+
+.nim-network-edge.selected .nim-network-edge-line {
+  stroke-width: 2.6;
+}
+
+.nim-network-edge.selected .nim-network-edge-dot {
+  fill: var(--accent);
+  filter: drop-shadow(0 0 6px color-mix(in srgb, var(--accent) 50%, transparent));
+}
+
+.nim-network-node {
+  cursor: pointer;
+}
+
+.nim-network-node rect {
+  stroke-width: 1.6;
+  transition: fill 0.12s, stroke-width 0.12s, filter 0.12s;
+}
+
+.nim-network-node:hover rect,
+.nim-network-node.active rect {
+  stroke-width: 2;
+  filter: drop-shadow(0 0 6px color-mix(in srgb, var(--accent) 22%, transparent));
+}
+
+.nim-network-node-title,
+.nim-network-node-role {
+  text-anchor: middle;
+  pointer-events: none;
+  font-family: ui-monospace, monospace;
+}
+
+.nim-network-node-title {
+  fill: var(--text);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.nim-network-node-role {
+  font-size: 8.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.nim-network-details {
+  min-height: 300px;
+  max-height: 300px;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+}
+
+.nim-diagram--expanded .nim-network-details {
+  min-height: 520px;
+  max-height: 520px;
+}
+
+.nim-network-details-title {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 800;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+
+.nim-selected-flow {
+  display: grid;
+  gap: 5px;
+  padding: 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--border));
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+}
+
+.nim-selected-flow-path {
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 850;
+  line-height: 1.35;
+}
+
+.nim-flow-card {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 3px 8px;
+  padding: 9px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+}
+
+.nim-flow-card:hover {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+}
+
+.nim-flow-direction {
+  grid-column: 1;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 750;
+  text-transform: uppercase;
+}
+
+.nim-flow-peer {
+  grid-column: 2;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nim-flow-label {
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 750;
+}
+
+.nim-flow-value {
+  min-width: 0;
+  color: var(--text);
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.nim-flow-empty {
+  padding: 16px 10px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
 }
 
 .nim-chain {
@@ -4858,6 +5522,7 @@ body  { background: var(--bg); color: var(--text); }
 .nim-chip--test { border-color: color-mix(in srgb, #a78bfa 40%, var(--border)); color: #a78bfa; }
 .nim-chip--test:hover { border-color: #a78bfa; color: #c4b5fd; }
 .nim-chip--test.nim-chip--active { background: color-mix(in srgb, #a78bfa 12%, transparent); }
+.nim-chip--missing { cursor: default; opacity: 0.58; border-style: dashed; }
 
 .nim-empty-state {
   padding: 40px;
@@ -4896,6 +5561,36 @@ body  { background: var(--bg); color: var(--text); }
   opacity: 0.8;
   pointer-events: none;
 }
+/* ── class expand button ── */
+.node-expand-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  padding: 4px 8px;
+  margin-top: 4px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--accent);
+  font-size: 10px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.node-expand-btn:hover { background: var(--panel2); }
+.node-expand-btn--open { color: var(--muted); border-color: var(--accent); }
+
+/* ── class node (child of an expanded service) ── */
+.node--class {
+  opacity: 0.92;
+  border-style: dashed;
+  border-color: var(--accent);
+}
+.node--class .node-type { font-style: italic; }
+
+/* ── expanded service node ── */
+.node--expanded { box-shadow: 0 0 0 2px var(--accent); }
+
 /* =========================
    CHAT PANEL
 ========================= */
@@ -5424,7 +6119,8 @@ html {
 .app.red,
 .app.purple,
 .app.green,
-.app.blue {
+.app.blue,
+.app.glass {
   --bg: #11110f;
   --panel: #181713;
   --panel2: #201f1a;
@@ -5478,6 +6174,478 @@ html {
   --accent-warm: #60a5fa;
   --canvas-glow: rgba(56, 189, 248, 0.1);
   --canvas-grid-highlight: rgba(96, 165, 250, 0.08);
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+   GLASS / APPLE THEME
+   Authentic macOS vibrancy: rich deep wallpaper + frosted glass surfaces
+   ════════════════════════════════════════════════════════════════════════════ */
+
+/* ── 1. Token layer ──────────────────────────────────────────────────────── */
+.app.glass {
+  --accent:       #007AFF;
+  --accent-strong: #0062cc;
+  --accent-warm:  #30d158;
+  --canvas-glow:  rgba(0, 122, 255, 0.14);
+  --canvas-grid-highlight: rgba(48, 209, 88, 0.06);
+
+  /* All panel vars are white-alpha so every gradient using them stays glass */
+  --bg:             #07070f;
+  --panel:          rgba(255, 255, 255, 0.06);
+  --panel2:         rgba(255, 255, 255, 0.035);
+  --surface-strong: rgba(255, 255, 255, 0.085);
+  --surface-soft:   rgba(255, 255, 255, 0.03);
+  --text:           #f5f5f7;
+  --muted:          #98989f;
+  --border:         rgba(255, 255, 255, 0.13);
+  --canvas-base:    transparent; /* lets wallpaper show */
+  --canvas-grid-line: rgba(255, 255, 255, 0.05);
+  --canvas-hud:     rgba(255, 255, 255, 0.07);
+  --shadow-color:   rgba(0, 0, 0, 0.65);
+  --edge-preview:   rgba(148, 148, 159, 0.75);
+  --neon-glow:      none;
+  --neon-glow-sm:   none;
+}
+
+/* ── 2. Wallpaper — the richly-coloured backdrop glass panels frost over ─── */
+.app.glass,
+.app.glass .canvas {
+  background:
+    radial-gradient(ellipse 80% 55% at 20% 10%,  rgba(88,  86, 214, 0.55) 0%, transparent 60%),
+    radial-gradient(ellipse 60% 50% at 80% 90%,  rgba(0,  122, 255, 0.45) 0%, transparent 55%),
+    radial-gradient(ellipse 50% 60% at 75% 15%,  rgba(48, 209, 88,  0.20) 0%, transparent 50%),
+    radial-gradient(ellipse 70% 40% at 10% 85%,  rgba(191, 90,  242, 0.22) 0%, transparent 50%),
+    linear-gradient(160deg, #06060f 0%, #08081a 40%, #050510 100%);
+}
+
+/* ── 3. Shared glass mixin (applied via multi-selector below) ────────────── */
+.app.glass .topbar,
+.app.glass .workspace-side-pane,
+.app.glass .palette,
+.app.glass .code-panel,
+.app.glass .fileWorkspace,
+.app.glass .fileWorkspace-header,
+.app.glass .fileWorkspace-group,
+.app.glass .fileWorkspace-body,
+.app.glass .terminal-dock,
+.app.glass .terminal-dock-header,
+.app.glass .chat-panel,
+.app.glass .settings-modal-inner,
+.app.glass .nodeConfigModal,
+.app.glass .nodeCodeModal {
+  background: rgba(18, 18, 28, 0.45) !important;
+  backdrop-filter: blur(36px) saturate(1.8) brightness(1.1);
+  -webkit-backdrop-filter: blur(36px) saturate(1.8) brightness(1.1);
+  border-color: rgba(255, 255, 255, 0.12) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.16),   /* top specular edge */
+    inset 0 -1px 0 rgba(0, 0, 0, 0.18),          /* bottom shadow edge */
+    0 8px 40px rgba(0, 0, 0, 0.55) !important;
+}
+
+/* ── 4. Topbar ───────────────────────────────────────────────────────────── */
+.app.glass .topbar {
+  background: rgba(12, 12, 22, 0.52) !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.14),
+    0 1px 0 rgba(0, 0, 0, 0.4),
+    0 4px 24px rgba(0, 0, 0, 0.5) !important;
+}
+
+/* ── 5. Nodes — individually frosted cards ───────────────────────────────── */
+.app.glass .node {
+  background: rgba(255, 255, 255, 0.065) !important;
+  backdrop-filter: blur(20px) saturate(1.6);
+  -webkit-backdrop-filter: blur(20px) saturate(1.6);
+  border: 1px solid rgba(255, 255, 255, 0.18) !important;
+  border-radius: 16px;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.22),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.15),
+    0 8px 32px rgba(0, 0, 0, 0.5),
+    0 2px 8px rgba(0, 0, 0, 0.35);
+  transition: box-shadow 0.2s ease, border-color 0.2s ease, transform 0.15s ease;
+}
+
+.app.glass .node:hover {
+  background: rgba(255, 255, 255, 0.09) !important;
+  border-color: rgba(255, 255, 255, 0.28) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.28),
+    0 12px 40px rgba(0, 0, 0, 0.6),
+    0 0 0 0.5px rgba(255, 255, 255, 0.12) !important;
+  transform: translateY(-1px);
+}
+
+.app.glass .node.selected {
+  background: rgba(0, 122, 255, 0.1) !important;
+  border-color: rgba(0, 122, 255, 0.7) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.22),
+    0 0 0 3px rgba(0, 122, 255, 0.28),
+    0 12px 48px rgba(0, 0, 0, 0.6),
+    0 0 24px rgba(0, 122, 255, 0.18) !important;
+}
+
+.app.glass .node--class {
+  background: rgba(255, 255, 255, 0.04) !important;
+  border-color: rgba(0, 122, 255, 0.35) !important;
+  border-style: solid !important;
+}
+
+/* ── 6. Canvas HUD ───────────────────────────────────────────────────────── */
+.app.glass .canvasHud > div,
+.app.glass .canvasHud > button,
+.app.glass .cameraControls {
+  background: rgba(18, 18, 28, 0.5) !important;
+  backdrop-filter: blur(20px) saturate(1.6);
+  -webkit-backdrop-filter: blur(20px) saturate(1.6);
+  border-color: rgba(255, 255, 255, 0.12) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14), 0 4px 20px rgba(0, 0, 0, 0.5) !important;
+}
+
+/* ── 7. Buttons ──────────────────────────────────────────────────────────── */
+.app.glass .btn {
+  background: rgba(255, 255, 255, 0.08) !important;
+  border-color: rgba(255, 255, 255, 0.14) !important;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14);
+}
+
+.app.glass .btn:hover {
+  background: rgba(255, 255, 255, 0.13) !important;
+  border-color: rgba(255, 255, 255, 0.22) !important;
+}
+
+.app.glass .btn-primary {
+  background: rgba(0, 122, 255, 0.82) !important;
+  border-color: rgba(0, 122, 255, 0.5) !important;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.2), 0 2px 12px rgba(0,122,255,0.35) !important;
+}
+
+.app.glass .btn-primary:hover {
+  background: rgba(0, 122, 255, 0.95) !important;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.24), 0 4px 20px rgba(0,122,255,0.5) !important;
+}
+
+/* ── 8. Inputs ───────────────────────────────────────────────────────────── */
+.app.glass .input,
+.app.glass input:not([type="range"]),
+.app.glass textarea,
+.app.glass select {
+  background: rgba(255, 255, 255, 0.06) !important;
+  border-color: rgba(255, 255, 255, 0.12) !important;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.25);
+}
+
+.app.glass .input:focus,
+.app.glass input:focus:not([type="range"]) {
+  background: rgba(255, 255, 255, 0.09) !important;
+  border-color: rgba(0, 122, 255, 0.65) !important;
+  box-shadow: 0 0 0 3px rgba(0, 122, 255, 0.22), inset 0 1px 3px rgba(0, 0, 0, 0.2) !important;
+}
+
+/* ── 9. Palette items ────────────────────────────────────────────────────── */
+.app.glass .paletteItem {
+  background: rgba(255, 255, 255, 0.04) !important;
+  border-color: rgba(255, 255, 255, 0.08) !important;
+  border-radius: 10px;
+}
+
+.app.glass .paletteItem:hover {
+  background: rgba(255, 255, 255, 0.09) !important;
+  border-color: rgba(255, 255, 255, 0.16) !important;
+}
+
+.app.glass .paletteItem--implemented {
+  background: rgba(0, 122, 255, 0.08) !important;
+  border-color: rgba(0, 122, 255, 0.22) !important;
+}
+
+/* ── 10. Tabs ────────────────────────────────────────────────────────────── */
+.app.glass .paletteTab,
+.app.glass .workspace-tab,
+.app.glass .terminal-dock-tab {
+  background: transparent !important;
+}
+
+.app.glass .paletteTab.active,
+.app.glass .workspace-tab.active,
+.app.glass .terminal-dock-tab.active {
+  background: rgba(0, 122, 255, 0.18) !important;
+  border-color: rgba(0, 122, 255, 0.35) !important;
+}
+
+/* ── 11. Ports ───────────────────────────────────────────────────────────── */
+.app.glass .port {
+  background: rgba(255, 255, 255, 0.2) !important;
+  border-color: rgba(255, 255, 255, 0.35) !important;
+}
+
+.app.glass .port:hover {
+  background: #007AFF !important;
+  border-color: rgba(0, 122, 255, 0.8) !important;
+  box-shadow: 0 0 10px rgba(0, 122, 255, 0.6) !important;
+}
+
+/* ── 12. Edges ───────────────────────────────────────────────────────────── */
+.app.glass .edge {
+  stroke: rgba(0, 122, 255, 0.55);
+  stroke-width: 1.5;
+}
+
+.app.glass .edge.selected {
+  stroke: #007AFF;
+  stroke-width: 2;
+  filter: drop-shadow(0 0 6px rgba(0, 122, 255, 0.6));
+}
+
+/* ── 13. Startup overlay ─────────────────────────────────────────────────── */
+.app.glass .startup-overlay {
+  background:
+    radial-gradient(ellipse 80% 55% at 20% 10%,  rgba(88,  86, 214, 0.45) 0%, transparent 60%),
+    radial-gradient(ellipse 60% 50% at 80% 90%,  rgba(0,  122, 255, 0.38) 0%, transparent 55%),
+    rgba(8, 8, 18, 0.72) !important;
+  backdrop-filter: blur(48px) saturate(1.8);
+  -webkit-backdrop-filter: blur(48px) saturate(1.8);
+}
+
+.app.glass .startup-panel {
+  background: rgba(255, 255, 255, 0.06) !important;
+  backdrop-filter: blur(32px) saturate(1.6);
+  -webkit-backdrop-filter: blur(32px) saturate(1.6);
+  border-color: rgba(255, 255, 255, 0.14) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    0 24px 80px rgba(0, 0, 0, 0.7) !important;
+  border-radius: 20px !important;
+}
+
+/* ── 14. Scrollbars ──────────────────────────────────────────────────────── */
+.app.glass ::-webkit-scrollbar-track { background: transparent; }
+.app.glass ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.14); border-radius: 4px; }
+.app.glass ::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.24); }
+
+/* ── 15. Drag preview ────────────────────────────────────────────────────── */
+.app.glass .paletteDragPreview {
+  background: rgba(18, 18, 28, 0.72) !important;
+  backdrop-filter: blur(20px);
+  border-color: rgba(0, 122, 255, 0.5) !important;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(0,122,255,0.3) !important;
+}
+
+/* ── 16. File Workspace & Editor ─────────────────────────────────────────── */
+
+/* File explorer sidebar */
+.app.glass .file-explorer {
+  background: rgba(10, 10, 20, 0.38) !important;
+  backdrop-filter: blur(28px) saturate(1.7);
+  -webkit-backdrop-filter: blur(28px) saturate(1.7);
+  border-right: 1px solid rgba(255, 255, 255, 0.09) !important;
+}
+
+.app.glass .file-explorer-header {
+  background: rgba(255, 255, 255, 0.04) !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08) !important;
+}
+
+/* Service group tabs inside explorer */
+.app.glass .service-group-tabs {
+  background: rgba(255, 255, 255, 0.03) !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08) !important;
+}
+
+.app.glass .service-group-tab {
+  background: transparent !important;
+  color: rgba(255, 255, 255, 0.5) !important;
+  border-color: transparent !important;
+}
+
+.app.glass .service-group-tab:hover {
+  background: rgba(255, 255, 255, 0.07) !important;
+  color: rgba(255, 255, 255, 0.8) !important;
+}
+
+.app.glass .service-group-tab.active {
+  background: rgba(0, 122, 255, 0.2) !important;
+  color: #007AFF !important;
+  border-color: rgba(0, 122, 255, 0.35) !important;
+}
+
+/* Project root label */
+.app.glass .file-tree-project-root {
+  color: rgba(255, 255, 255, 0.9) !important;
+}
+
+.app.glass .file-tree-project-root-icon {
+  background: rgba(0, 122, 255, 0.18) !important;
+  border-color: rgba(0, 122, 255, 0.4) !important;
+}
+
+.app.glass .file-tree-project-root-icon::before {
+  background: rgba(0, 122, 255, 0.4) !important;
+}
+
+/* File search input */
+.app.glass .file-search-input {
+  background: rgba(255, 255, 255, 0.05) !important;
+  border-color: rgba(255, 255, 255, 0.1) !important;
+  color: rgba(255, 255, 255, 0.85) !important;
+}
+
+.app.glass .file-search-input::placeholder {
+  color: rgba(255, 255, 255, 0.3) !important;
+}
+
+/* File tree items */
+.app.glass .file-tree-item {
+  color: rgba(255, 255, 255, 0.72) !important;
+}
+
+.app.glass .file-tree-item:hover {
+  background: rgba(255, 255, 255, 0.07) !important;
+  color: rgba(255, 255, 255, 0.92) !important;
+}
+
+.app.glass .file-tree-item.active {
+  background: rgba(0, 122, 255, 0.18) !important;
+  color: #fff !important;
+}
+
+.app.glass .file-tree-icon--file {
+  background: rgba(0, 122, 255, 0.1) !important;
+  border-color: rgba(0, 122, 255, 0.28) !important;
+  color: #007AFF !important;
+}
+
+/* File action buttons */
+.app.glass .file-action-btn,
+.app.glass .file-explorer-clear {
+  background: rgba(255, 255, 255, 0.06) !important;
+  border-color: rgba(255, 255, 255, 0.12) !important;
+  color: rgba(255, 255, 255, 0.7) !important;
+}
+
+.app.glass .file-action-btn:hover:not(:disabled),
+.app.glass .file-explorer-clear:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.12) !important;
+  border-color: rgba(255, 255, 255, 0.2) !important;
+  color: rgba(255, 255, 255, 0.95) !important;
+}
+
+.app.glass .file-action-btn--run {
+  background: rgba(0, 122, 255, 0.2) !important;
+  border-color: rgba(0, 122, 255, 0.4) !important;
+  color: #007AFF !important;
+}
+
+.app.glass .file-action-btn--run:hover:not(:disabled) {
+  background: rgba(0, 122, 255, 0.35) !important;
+}
+
+/* Context menu */
+.app.glass .file-context-menu {
+  background: rgba(18, 18, 32, 0.82) !important;
+  backdrop-filter: blur(32px) saturate(1.8);
+  -webkit-backdrop-filter: blur(32px) saturate(1.8);
+  border-color: rgba(255, 255, 255, 0.14) !important;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.65), inset 0 1px 0 rgba(255,255,255,0.12) !important;
+}
+
+.app.glass .file-context-menu-item:hover {
+  background: rgba(0, 122, 255, 0.15) !important;
+  color: #fff !important;
+}
+
+/* Editor area toolbar bar (file name + Run/Build) */
+.app.glass .workspace-editor-bar {
+  background: rgba(12, 12, 22, 0.5) !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.09) !important;
+  backdrop-filter: blur(20px) saturate(1.5);
+  -webkit-backdrop-filter: blur(20px) saturate(1.5);
+  box-shadow: inset 0 -1px 0 rgba(0, 0, 0, 0.2);
+}
+
+/* Editor tabs strip */
+.app.glass .editor-tabs {
+  background: rgba(8, 8, 18, 0.42) !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.09) !important;
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+}
+
+.app.glass .editor-tab {
+  background: transparent !important;
+  border-color: transparent !important;
+  color: rgba(255, 255, 255, 0.45) !important;
+}
+
+.app.glass .editor-tab:hover {
+  background: rgba(255, 255, 255, 0.07) !important;
+  border-color: rgba(255, 255, 255, 0.1) !important;
+  color: rgba(255, 255, 255, 0.82) !important;
+}
+
+.app.glass .editor-tab.active {
+  background: rgba(0, 122, 255, 0.14) !important;
+  border-color: rgba(0, 122, 255, 0.3) !important;
+  color: #007AFF !important;
+  box-shadow: inset 0 1px 0 rgba(0, 122, 255, 0.25);
+}
+
+.app.glass .editor-tab-file-icon {
+  background: rgba(0, 122, 255, 0.1) !important;
+  border-color: rgba(0, 122, 255, 0.25) !important;
+  color: #007AFF !important;
+}
+
+/* Breadcrumb path below tabs */
+.app.glass .workspace-file-path {
+  background: rgba(6, 6, 14, 0.3) !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07) !important;
+  color: rgba(255, 255, 255, 0.38) !important;
+}
+
+/* Monaco editor container — keep it fully transparent so the glass panel shows */
+.app.glass .workspace-code-editor {
+  background: rgba(10, 10, 20, 0.55) !important;
+}
+
+.app.glass .workspace-code-editor .monaco-editor,
+.app.glass .workspace-code-editor .monaco-editor-background,
+.app.glass .workspace-code-editor .monaco-editor .margin {
+  background-color: transparent !important;
+}
+
+/* Empty state */
+.app.glass .workspace-empty {
+  color: rgba(255, 255, 255, 0.3) !important;
+}
+
+/* File create box */
+.app.glass .file-create-box {
+  background: rgba(255, 255, 255, 0.04) !important;
+  border-color: rgba(255, 255, 255, 0.1) !important;
+}
+
+/* Dropdown menus */
+.app.glass .dropdown-menu {
+  background: rgba(14, 14, 26, 0.88) !important;
+  backdrop-filter: blur(32px) saturate(1.8);
+  -webkit-backdrop-filter: blur(32px) saturate(1.8);
+  border-color: rgba(255, 255, 255, 0.14) !important;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.65), inset 0 1px 0 rgba(255,255,255,0.1) !important;
+}
+
+/* Modal overlay */
+.app.glass .modal {
+  background: rgba(4, 4, 12, 0.7) !important;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
 }
 
 /* Re-assert light mode backgrounds after color theme blocks (which set dark vars) */
