@@ -74,9 +74,9 @@ const OPENAI_MODELS = [
 ];
 
 const ANTHROPIC_MODELS = [
-  { id: "claude-opus-4-5",            hint: "Most capable" },
-  { id: "claude-sonnet-4-5",          hint: "Best balance" },
-  { id: "claude-haiku-4-5",           hint: "Fastest" },
+  { id: "claude-opus-4-7",            hint: "Most capable" },
+  { id: "claude-sonnet-4-6",          hint: "Best balance" },
+  { id: "claude-haiku-4-5-20251001",  hint: "Fastest" },
   { id: "claude-3-5-sonnet-20241022", hint: "Prev Sonnet" },
   { id: "claude-3-5-haiku-20241022",  hint: "Prev Haiku" },
   { id: "claude-3-opus-20240229",     hint: "Prev Opus" },
@@ -173,6 +173,8 @@ export default function Settings({
   onSave,
   theme,
   setTheme,
+  colorScheme,
+  setColorScheme,
   editorSettings,
   setEditorSettings,
   terminalSettings,
@@ -186,6 +188,8 @@ export default function Settings({
   onSave: (s: AISettings) => void;
   theme: AppTheme;
   setTheme: (theme: AppTheme) => void;
+  colorScheme: "dark" | "light";
+  setColorScheme: (scheme: "dark" | "light") => void;
   editorSettings: EditorSettings;
   setEditorSettings: (settings: EditorSettings) => void;
   terminalSettings: TerminalSettings;
@@ -258,7 +262,8 @@ export default function Settings({
       setTestResult("ok");
     } catch (err: any) {
       setTestResult("fail");
-      setError(err.message ?? "Connection failed.");
+      const msg = typeof err === "string" ? err : (err?.message ?? "Connection failed.");
+      setError(msg);
     } finally {
       setTesting(false);
     }
@@ -390,8 +395,41 @@ export default function Settings({
         {activeSection === "appearance" && (
           <section className="settings-section">
             <div className="settings-section-heading">
-              <span>Theme</span>
-              <small>Choose a workspace color</small>
+              <span>Color Mode</span>
+              <small>Switch between dark and light workspace</small>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 24 }}>
+              {(["dark", "light"] as const).map(scheme => (
+                <button
+                  key={scheme}
+                  onClick={() => setColorScheme(scheme)}
+                  style={{
+                    display: "flex", alignItems: "center", gap: 12,
+                    padding: "14px 16px", borderRadius: 10, cursor: "pointer",
+                    border: `1px solid ${colorScheme === scheme ? "var(--accent)" : "var(--border)"}`,
+                    background: colorScheme === scheme
+                      ? "color-mix(in srgb, var(--accent) 10%, transparent)"
+                      : "var(--panel2)",
+                    boxShadow: colorScheme === scheme ? "0 0 0 1px color-mix(in srgb, var(--accent) 20%, transparent)" : "none",
+                    transition: "all 0.15s",
+                  }}
+                >
+                  <span style={{ fontSize: 22 }}>{scheme === "dark" ? "🌙" : "☀️"}</span>
+                  <span style={{ display: "flex", flexDirection: "column", gap: 2, textAlign: "left" }}>
+                    <span style={{ fontSize: 12, fontWeight: 700, color: colorScheme === scheme ? "var(--accent)" : "var(--text)" }}>
+                      {scheme === "dark" ? "Dark" : "Light"}
+                    </span>
+                    <small style={{ fontSize: 10, color: "var(--muted)" }}>
+                      {scheme === "dark" ? "Dark workspace" : "Light workspace"}
+                    </small>
+                  </span>
+                </button>
+              ))}
+            </div>
+
+            <div className="settings-section-heading">
+              <span>Accent Color</span>
+              <small>Choose a workspace accent</small>
             </div>
             <div className="settings-theme-grid">
               {THEME_OPTIONS.map(option => (

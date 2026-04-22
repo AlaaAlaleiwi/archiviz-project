@@ -1,3 +1,4 @@
+use futures_util::StreamExt;
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -506,6 +507,121 @@ fn terminal_kill(state: State<'_, TerminalState>, id: String) -> Result<(), Stri
     Ok(())
 }
 
+// ── AI HTTP helpers (bypass WebView CORS) ─────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AiFetchOptions {
+    url: String,
+    headers: HashMap<String, String>,
+    body: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct AiTokenEvent {
+    request_id: String,
+    data: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct AiDoneEvent {
+    request_id: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct AiErrorEvent {
+    request_id: String,
+    error: String,
+}
+
+#[tauri::command]
+async fn ai_fetch(options: AiFetchOptions) -> Result<String, String> {
+    let client = reqwest::Client::new();
+    let mut builder = client.post(&options.url);
+    for (k, v) in &options.headers {
+        builder = builder.header(k.as_str(), v.as_str());
+    }
+    let response = builder
+        .body(options.body)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !response.status().is_success() {
+        let status = response.status().as_u16();
+        let text = response.text().await.unwrap_or_default();
+        return Err(format!("HTTP {}: {}", status, text));
+    }
+    response.text().await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn ai_stream(
+    app: tauri::AppHandle,
+    options: AiFetchOptions,
+    request_id: String,
+) -> Result<(), String> {
+    let client = reqwest::Client::new();
+    let mut builder = client.post(&options.url);
+    for (k, v) in &options.headers {
+        builder = builder.header(k.as_str(), v.as_str());
+    }
+    let response = match builder.body(options.body).send().await {
+        Ok(r) => r,
+        Err(e) => {
+            let _ = app.emit("ai-error", AiErrorEvent { request_id, error: e.to_string() });
+            return Ok(());
+        }
+    };
+    if !response.status().is_success() {
+        let status = response.status().as_u16();
+        let text = response.text().await.unwrap_or_default();
+        let _ = app.emit("ai-error", AiErrorEvent {
+            request_id,
+            error: format!("HTTP {}: {}", status, text),
+        });
+        return Ok(());
+    }
+    let mut stream = response.bytes_stream();
+    let mut buffer = String::new();
+    while let Some(chunk) = stream.next().await {
+        let bytes = match chunk {
+            Ok(b) => b,
+            Err(e) => {
+                let _ = app.emit("ai-error", AiErrorEvent { request_id, error: e.to_string() });
+                return Ok(());
+            }
+        };
+        buffer.push_str(&String::from_utf8_lossy(&bytes));
+        loop {
+            match buffer.find('\n') {
+                None => break,
+                Some(pos) => {
+                    let line = buffer[..pos].trim().to_string();
+                    buffer = buffer[pos + 1..].to_string();
+                    if let Some(data) = line.strip_prefix("data:") {
+                        let data = data.trim();
+                        if data == "[DONE]" {
+                            let _ = app.emit("ai-done", AiDoneEvent { request_id: request_id.clone() });
+                            return Ok(());
+                        }
+                        if !data.is_empty() {
+                            let _ = app.emit("ai-token", AiTokenEvent {
+                                request_id: request_id.clone(),
+                                data: data.to_string(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let _ = app.emit("ai-done", AiDoneEvent { request_id });
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -517,7 +633,9 @@ pub fn run() {
             terminal_kill,
             git_run,
             workspace_materialize,
-            workspace_command
+            workspace_command,
+            ai_fetch,
+            ai_stream
         ])
         .setup(|app| {
             if cfg!(debug_assertions) {

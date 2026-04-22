@@ -1,3 +1,5 @@
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { CHAT_SYSTEM_PROMPT } from "../utils/systemPrompts";
 
 export interface ChatMessage {
@@ -18,6 +20,12 @@ export interface AISettings {
   stream?: boolean;
 }
 
+interface AiFetchOptions {
+  url: string;
+  headers: Record<string, string>;
+  body: string;
+}
+
 export class AIService {
   private settings: AISettings;
 
@@ -25,7 +33,7 @@ export class AIService {
     this.settings = settings;
   }
 
-  // ── Chat with full in-memory history (works for all providers) ───────────
+  // ── Chat with full in-memory history ─────────────────────────────────────
 
   async chatStream(
     history: ChatMessage[],
@@ -42,77 +50,85 @@ export class AIService {
     return this.callStream(messages, onToken, signal);
   }
 
-  // ── Provider-aware streaming ──────────────────────────────────────────────
+  // ── Streaming via Tauri native HTTP (no CORS) ─────────────────────────────
 
   async callStream(
     messages: ChatMessage[],
     onToken: (token: string) => void,
     signal?: AbortSignal
   ): Promise<string> {
-    const res = await fetch(this.chatUrl(), {
-      method: "POST",
+    const requestId = crypto.randomUUID();
+    const opts: AiFetchOptions = {
+      url: this.chatUrl(),
       headers: this.headers(),
       body: this.buildBody(messages, true),
-      signal,
+    };
+
+    return new Promise<string>((resolve, reject) => {
+      let fullText = "";
+      const unlisteners: Array<() => void> = [];
+
+      const cleanup = () => unlisteners.forEach(fn => fn());
+
+      signal?.addEventListener("abort", () => {
+        cleanup();
+        reject(new DOMException("Aborted", "AbortError"));
+      });
+
+      Promise.all([
+        listen<{ requestId: string; data: string }>("ai-token", event => {
+          if (event.payload.requestId !== requestId) return;
+          try {
+            const json = JSON.parse(event.payload.data);
+            const token = this.extractStreamToken(json);
+            if (token) { fullText += token; onToken(token); }
+          } catch {}
+        }),
+        listen<{ requestId: string }>("ai-done", event => {
+          if (event.payload.requestId !== requestId) return;
+          cleanup();
+          resolve(fullText);
+        }),
+        listen<{ requestId: string; error: string }>("ai-error", event => {
+          if (event.payload.requestId !== requestId) return;
+          cleanup();
+          reject(new Error(event.payload.error));
+        }),
+      ]).then(([u1, u2, u3]) => {
+        unlisteners.push(u1, u2, u3);
+        invoke("ai_stream", { options: opts, requestId }).catch(err => {
+          cleanup();
+          reject(new Error(String(err)));
+        });
+      });
     });
-
-    if (!res.ok || !res.body) {
-      const errText = await res.text().catch(() => "");
-      throw new Error(`Request failed ${res.status}${errText ? ": " + errText : ""}`);
-    }
-
-    // Anthropic returns a single JSON response even for streaming requests here
-    if (this.settings.provider === "anthropic") {
-      const data = await res.json();
-      const text = data?.content?.[0]?.text || "";
-      if (text) onToken(text);
-      return text;
-    }
-
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let fullText = "";
-
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-
-      const chunk = decoder.decode(value);
-      for (const line of chunk.split("\n")) {
-        const data = line.startsWith("data:") ? line.slice(5).trim() : "";
-        if (!data || data === "[DONE]") continue;
-        try {
-          const json = JSON.parse(data);
-          const token = json?.choices?.[0]?.delta?.content || "";
-          if (token) { fullText += token; onToken(token); }
-        } catch {}
-      }
-    }
-
-    return fullText;
   }
 
-  // ── Single-shot call (used by code generation) ────────────────────────────
+  // ── Single-shot call (health check, code generation) ─────────────────────
 
   async call(messages: ChatMessage[], signal?: AbortSignal): Promise<string> {
-    const res = await fetch(this.chatUrl(), {
-      method: "POST",
+    const opts: AiFetchOptions = {
+      url: this.chatUrl(),
       headers: this.headers(),
       body: this.buildBody(messages, false),
-      signal,
+    };
+
+    const abortPromise = signal
+      ? new Promise<never>((_, reject) =>
+          signal.addEventListener("abort", () =>
+            reject(new DOMException("Aborted", "AbortError"))
+          )
+        )
+      : null;
+
+    const fetchPromise = invoke<string>("ai_fetch", { options: opts }).then(raw => {
+      if (this.settings.provider === "spring-boot") {
+        try { return this.extractContent(JSON.parse(raw)); } catch { return raw; }
+      }
+      try { return this.extractContent(JSON.parse(raw)); } catch { return raw; }
     });
 
-    if (!res.ok) {
-      const errText = await res.text().catch(() => "");
-      throw new Error(`Request failed ${res.status}${errText ? ": " + errText : ""}`);
-    }
-
-    if (this.settings.provider === "spring-boot") {
-      const raw = await res.text();
-      try { return this.extractContent(JSON.parse(raw)); } catch { return raw; }
-    }
-
-    return this.extractContent(await res.json());
+    return abortPromise ? Promise.race([fetchPromise, abortPromise]) : fetchPromise;
   }
 
   async healthCheck(): Promise<void> {
@@ -147,13 +163,13 @@ export class AIService {
     const maxTok = this.settings.maxTokens;
 
     if (this.settings.provider === "anthropic") {
-      // Anthropic uses system as a top-level field, not inside messages
       const systemMsg = messages.find(m => m.role === "system");
       const rest = messages.filter(m => m.role !== "system");
       const body: Record<string, unknown> = {
         model: this.settings.model,
         max_tokens: maxTok ?? 4096,
         messages: rest,
+        stream,
       };
       if (systemMsg) body["system"] = systemMsg.content;
       return JSON.stringify(body);
@@ -177,6 +193,17 @@ export class AIService {
     };
     if (maxTok) body["max_tokens"] = maxTok;
     return JSON.stringify(body);
+  }
+
+  private extractStreamToken(json: unknown): string {
+    if (typeof json !== "object" || json === null) return "";
+    const j = json as Record<string, unknown>;
+    if (this.settings.provider === "anthropic") {
+      if (j.type === "content_block_delta" && (j.delta as any)?.type === "text_delta")
+        return (j.delta as any).text ?? "";
+      return "";
+    }
+    return (j?.choices as any)?.[0]?.delta?.content ?? "";
   }
 
   private extractContent(data: unknown): string {

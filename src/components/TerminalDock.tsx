@@ -46,28 +46,6 @@ type TerminalDockProps = {
   getWorkspaceCwd?: () => Promise<string>;
 };
 
-const terminalTheme = {
-  background: "#11110f",
-  foreground: "#f7f4eb",
-  cursor: "#2dd4bf",
-  selectionBackground: "#2dd4bf44",
-  black: "#11110f",
-  red: "#f87171",
-  green: "#34d399",
-  yellow: "#fbbf24",
-  blue: "#60a5fa",
-  magenta: "#c084fc",
-  cyan: "#2dd4bf",
-  white: "#f1efe7",
-  brightBlack: "#6f6a5f",
-  brightRed: "#fb7185",
-  brightGreen: "#6ee7b7",
-  brightYellow: "#fde68a",
-  brightBlue: "#93c5fd",
-  brightMagenta: "#d8b4fe",
-  brightCyan: "#5eead4",
-  brightWhite: "#fffdf8",
-};
 
 const TERMINAL_DOCK_HEIGHT_KEY = "archiviz_terminal_dock_height";
 
@@ -128,13 +106,12 @@ export default function TerminalDock({ terminalSettings, getWorkspaceCwd }: Term
       cursorBlink: terminalSettings?.cursorBlink ?? true,
       cursorStyle: terminalSettings?.cursorStyle ?? "bar",
       convertEol: true,
-      fontFamily: terminalSettings?.fontFamily ?? '"JetBrains Mono", "SF Mono", SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace',
+      fontFamily: terminalSettings?.fontFamily ?? '"JetBrains Mono", "Cascadia Code", "SF Mono", Menlo, Monaco, Consolas, "Liberation Mono", monospace',
       fontSize: terminalSettings?.fontSize ?? 13,
-      fontWeight: 500,
+      fontWeight: 400,
       fontWeightBold: 700,
-      lineHeight: 1.38,
+      lineHeight: 1.5,
       letterSpacing: 0,
-      theme: terminalTheme,
       scrollback: 5000,
       allowProposedApi: false,
     });

@@ -457,6 +457,10 @@ export default function App() {
       ? saved
       : "black";
   });
+  const [colorScheme, setColorScheme] = useState<"dark" | "light">(() => {
+    const saved = localStorage.getItem("archiviz_color_scheme");
+    return saved === "light" ? "light" : "dark";
+  });
   const [settings, setSettings] = useState<AISettings | null>(() => {
     try {
       const saved = localStorage.getItem("ai_settings");
@@ -542,6 +546,10 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem("archiviz_theme", theme);
   }, [theme]);
+
+  useEffect(() => {
+    localStorage.setItem("archiviz_color_scheme", colorScheme);
+  }, [colorScheme]);
 
   useEffect(() => {
     localStorage.setItem(EDITOR_SETTINGS_KEY, JSON.stringify(editorSettings));
@@ -1680,7 +1688,7 @@ export default function App() {
   ======================= */
 
   return (
-    <div className={`app ${theme}`}>
+    <div className={`app ${colorScheme} ${theme}`}>
       <input
         ref={folderInputRef}
         type="file"
@@ -1873,7 +1881,7 @@ export default function App() {
                   activePath={activeWorkspacePath}
                   onActivePathChange={setActiveWorkspacePath}
                   onFilesChange={setWorkspaceFiles}
-                  editorTheme={editorSettings.theme}
+                  editorTheme={colorScheme}
                   editorSettings={editorSettings}
                   showGitFolder={gitRepositoryReady}
                   errorDiagnostics={buildDiagnostics}
@@ -1949,6 +1957,8 @@ export default function App() {
             <Settings
               theme={theme}
               setTheme={setTheme}
+              colorScheme={colorScheme}
+              setColorScheme={setColorScheme}
               editorSettings={editorSettings}
               setEditorSettings={setEditorSettings}
               terminalSettings={terminalSettings}
@@ -2027,6 +2037,7 @@ export default function App() {
           onMaximize={() => { setChatMinimized(false); setChatUnread(0); }}
           onClose={() => { setShowChat(false); setChatMinimized(false); setChatUnread(0); }}
           onNewMessage={() => setChatUnread(v => v + 1)}
+          workspaceFiles={workspaceFiles}
         />
       )}
 
