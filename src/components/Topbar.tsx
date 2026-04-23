@@ -2,7 +2,7 @@ import "../styles.css";
 import { useState, useRef, useEffect } from "react";
 import type { JavaVersion, SpringBootVersion, BuildTool, Language } from "../types";
 
-const JAVA_VERSIONS: JavaVersion[]        = ["17", "21", "25"];
+const JAVA_VERSIONS: JavaVersion[]         = ["17", "21", "25"];
 const SPRING_VERSIONS: SpringBootVersion[] = ["3.2", "3.3", "3.4"];
 const BUILD_TOOLS: BuildTool[]             = ["maven", "gradle"];
 
@@ -14,74 +14,74 @@ export type JavaProjectConfig = {
 };
 
 export type RepositoryGitOperation =
-  | "init"
-  | "status"
-  | "fetch"
-  | "set-origin"
-  | "pull"
-  | "push"
-  | "rebase"
-  | "merge"
-  | "stash"
-  | "stash-pop"
-  | "abort-rebase"
-  | "abort-merge";
+  | "init" | "status" | "fetch" | "set-origin"
+  | "pull" | "push" | "rebase" | "merge"
+  | "stash" | "stash-pop" | "abort-rebase" | "abort-merge";
 
-/* ─────────────────────────────────────────
-   DROPDOWN MENU
-───────────────────────────────────────── */
-type DropdownItem = {
-  label: string;
-  hint?: string;
-  onClick: () => void;
+/* ──────────────────────────────────────────────────────────────────────────
+   GENERIC DROPDOWN MENU
+────────────────────────────────────────────────────────────────────────── */
+type DropdownItem =
+  | { kind: "action"; label: string; hint?: string; onClick: () => void; disabled?: boolean; danger?: boolean }
+  | { kind: "divider" }
+  | { kind: "section"; label: string };
+
+function DropdownMenu({
+  label, items, disabled = false, alignRight = false,
+}: {
+  label: React.ReactNode;
+  items: DropdownItem[];
   disabled?: boolean;
-};
-
-function DropdownMenu({ label, items, disabled = false }: { label: string; items: DropdownItem[]; disabled?: boolean }) {
+  alignRight?: boolean;
+}) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!open) return;
-    const handler = (e: MouseEvent) => {
+    const close = (e: MouseEvent) => {
       if (!ref.current?.contains(e.target as Node)) setOpen(false);
     };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
+    document.addEventListener("mousedown", close);
+    return () => document.removeEventListener("mousedown", close);
   }, [open]);
 
   return (
     <div className="topbar-dropdown" ref={ref}>
       <button className="btn" onClick={() => !disabled && setOpen(o => !o)} disabled={disabled}>
-        {label} <span className="dropdown-caret">▾</span>
+        {label}
+        <span className="dropdown-caret">▾</span>
       </button>
       {open && (
-        <div className="dropdown-menu">
-          {items.map(item => (
-            <button
-              key={item.label}
-              className="dropdown-item"
-              disabled={item.disabled}
-              onClick={() => { item.onClick(); setOpen(false); }}
-            >
-              <span className="dropdown-item-label">{item.label}</span>
-              {item.hint && <span className="dropdown-item-hint">{item.hint}</span>}
-            </button>
-          ))}
+        <div className={`dropdown-menu${alignRight ? " dropdown-menu--right" : ""}`}>
+          {items.map((item, i) => {
+            if (item.kind === "divider")
+              return <div key={i} className="dropdown-divider" />;
+            if (item.kind === "section")
+              return <div key={i} className="dropdown-section-label">{item.label}</div>;
+            return (
+              <button
+                key={item.label}
+                className={`dropdown-item${item.danger ? " dropdown-item--danger" : ""}`}
+                disabled={item.disabled}
+                onClick={() => { item.onClick(); setOpen(false); }}
+              >
+                <span className="dropdown-item-label">{item.label}</span>
+                {item.hint && <span className="dropdown-item-hint">{item.hint}</span>}
+              </button>
+            );
+          })}
         </div>
       )}
     </div>
   );
 }
 
-/* ─────────────────────────────────────────
+/* ──────────────────────────────────────────────────────────────────────────
    UNSAVED CHANGES MODAL
-───────────────────────────────────────── */
+────────────────────────────────────────────────────────────────────────── */
 function UnsavedChangesModal({
-  projectName,
-  onSaveAndContinue,
-  onDiscardAndContinue,
-  onCancel,
+  projectName, onSaveAndContinue, onDiscardAndContinue, onCancel,
 }: {
   projectName: string;
   onSaveAndContinue: () => void;
@@ -109,9 +109,9 @@ function UnsavedChangesModal({
   );
 }
 
-/* ─────────────────────────────────────────
-   PROJECT CONFIG MODAL (Java-only)
-───────────────────────────────────────── */
+/* ──────────────────────────────────────────────────────────────────────────
+   PROJECT CONFIG MODAL
+────────────────────────────────────────────────────────────────────────── */
 export function ProjectConfigModal({
   initial,
   title = "New Project",
@@ -137,7 +137,6 @@ export function ProjectConfigModal({
   return (
     <div className="modal" onClick={onClose}>
       <div className="np-modal" onClick={e => e.stopPropagation()}>
-
         <div className="np-header">
           <span className="np-title">{title}</span>
           <button className="np-close" onClick={onClose}>✕</button>
@@ -159,11 +158,7 @@ export function ProjectConfigModal({
           <label className="np-label">Java Version</label>
           <div className="np-chip-row">
             {JAVA_VERSIONS.map(v => (
-              <button
-                key={v}
-                className={`np-chip ${cfg.javaVersion === v ? "active" : ""}`}
-                onClick={() => update({ javaVersion: v })}
-              >
+              <button key={v} className={`np-chip ${cfg.javaVersion === v ? "active" : ""}`} onClick={() => update({ javaVersion: v })}>
                 ☕ Java {v}
               </button>
             ))}
@@ -174,11 +169,7 @@ export function ProjectConfigModal({
           <label className="np-label">Spring Boot Version</label>
           <div className="np-chip-row">
             {SPRING_VERSIONS.map(v => (
-              <button
-                key={v}
-                className={`np-chip ${cfg.springBootVersion === v ? "active" : ""}`}
-                onClick={() => update({ springBootVersion: v })}
-              >
+              <button key={v} className={`np-chip ${cfg.springBootVersion === v ? "active" : ""}`} onClick={() => update({ springBootVersion: v })}>
                 Spring Boot {v}
               </button>
             ))}
@@ -189,11 +180,7 @@ export function ProjectConfigModal({
           <label className="np-label">Build Tool</label>
           <div className="np-chip-row">
             {BUILD_TOOLS.map(t => (
-              <button
-                key={t}
-                className={`np-chip ${cfg.buildTool === t ? "active" : ""}`}
-                onClick={() => update({ buildTool: t })}
-              >
+              <button key={t} className={`np-chip ${cfg.buildTool === t ? "active" : ""}`} onClick={() => update({ buildTool: t })}>
                 {t === "maven" ? "⚙ Maven" : "🐘 Gradle"}
               </button>
             ))}
@@ -202,18 +189,16 @@ export function ProjectConfigModal({
 
         <div className="np-actions">
           <button className="btn" onClick={onClose}>Cancel</button>
-          <button className="btn btn-primary" onClick={handleConfirm}>
-            {confirmLabel}
-          </button>
+          <button className="btn btn-primary" onClick={handleConfirm}>{confirmLabel}</button>
         </div>
       </div>
     </div>
   );
 }
 
-/* ─────────────────────────────────────────
+/* ──────────────────────────────────────────────────────────────────────────
    TOPBAR
-───────────────────────────────────────── */
+────────────────────────────────────────────────────────────────────────── */
 interface TopbarProps {
   canSaveProject: boolean;
   hasUnsavedChanges?: boolean;
@@ -233,21 +218,10 @@ interface TopbarProps {
   onCreateProject: () => void;
   onOpenProject: () => void;
   onImportProject: () => void;
+  onOpenProjectInNewWindow?: () => void;
   onAddServiceProject?: () => void;
   onSaveProject: () => void;
   onExportProject: () => void;
-  gitRepositoryReady?: boolean;
-  gitBusy?: boolean;
-  gitOperation?: RepositoryGitOperation;
-  setGitOperation?: (operation: RepositoryGitOperation) => void;
-  gitRemoteUrl?: string;
-  setGitRemoteUrl?: (url: string) => void;
-  gitCurrentBranch?: string;
-  gitRepositoryName?: string;
-  gitTargetBranch?: string;
-  setGitTargetBranch?: (branch: string) => void;
-  gitBranches?: string[];
-  onRunGitOperation?: () => void;
   onLogout?: () => void;
 }
 
@@ -256,37 +230,19 @@ export default function Topbar({
   hasUnsavedChanges, autoSaveLabel, importingProject,
   javaVersion, setJavaVersion,
   springBootVersion, setSpringBootVersion,
-  detectedLanguage = "java",
-  detectedFramework,
+  detectedLanguage = "java", detectedFramework,
   projectName, setProjectName,
   buildTool, setBuildTool,
   onOpenSettings,
-  onCreateProject, onOpenProject, onImportProject, onAddServiceProject,
+  onCreateProject, onOpenProject, onImportProject, onOpenProjectInNewWindow, onAddServiceProject,
   onSaveProject, onExportProject,
-  gitRepositoryReady = false,
-  gitBusy = false,
-  gitOperation = "init",
-  setGitOperation,
-  gitRemoteUrl = "",
-  setGitRemoteUrl,
-  gitCurrentBranch = "main",
-  gitRepositoryName,
-  gitTargetBranch = "main",
-  setGitTargetBranch,
-  gitBranches = [],
-  onRunGitOperation,
   onLogout,
 }: TopbarProps) {
   type Step = "idle" | "unsaved" | "newProject" | "editProject";
   const [step, setStep] = useState<Step>("idle");
 
   const handleNewClick = () => {
-    if (hasUnsavedChanges) { setStep("unsaved"); } else { setStep("newProject"); }
-  };
-
-  const handleSaveAndContinue = () => {
-    onSaveProject?.();
-    setStep("newProject");
+    if (hasUnsavedChanges) setStep("unsaved"); else setStep("newProject");
   };
 
   const handleNewProjectConfirm = (cfg: JavaProjectConfig) => {
@@ -306,53 +262,37 @@ export default function Topbar({
     setStep("idle");
   };
 
-  const branchOptions = gitBranches.length > 0 ? gitBranches : [gitCurrentBranch || "main"];
-  const selectedBranchOptions = branchOptions.includes(gitTargetBranch) || !gitTargetBranch
-    ? branchOptions
-    : [gitTargetBranch, ...branchOptions];
-  const gitNeedsRepository = gitOperation !== "init" && gitOperation !== "status";
-  const gitNeedsRemote = gitOperation === "set-origin" && !gitRemoteUrl.trim();
-  const gitRunDisabled = gitBusy || (gitNeedsRepository && !gitRepositoryReady) || gitNeedsRemote;
+  // File dropdown items
+  const fileItems: DropdownItem[] = [
+    { kind: "section", label: "Project" },
+    { kind: "action", label: "New Project", hint: "Start a fresh project", onClick: handleNewClick },
+    { kind: "divider" },
+    { kind: "section", label: "Open" },
+    { kind: "action", label: "Open Project",      hint: "Load a saved .archbuilder.json file",      onClick: onOpenProject },
+    ...(onOpenProjectInNewWindow
+      ? [{ kind: "action" as const, label: "Open in New Window", hint: "Launch this project in a separate app window", onClick: onOpenProjectInNewWindow }]
+      : []),
+    { kind: "action", label: "Import Folder",     hint: importingProject ? "Importing…" : "Scan an existing code directory", onClick: onImportProject, disabled: importingProject },
+    ...(onAddServiceProject
+      ? [{ kind: "action" as const, label: "Add Service Folder", hint: "Scan code and add as a new canvas service", onClick: () => onAddServiceProject(), disabled: !!importingProject }]
+      : []),
+    { kind: "divider" },
+    { kind: "section", label: "Save" },
+    { kind: "action", label: "Save Project",          hint: "Save to .archbuilder.json",                   onClick: onSaveProject,  disabled: !canSaveProject },
+    { kind: "action", label: "Export as IDE Project", hint: "Download ZIP with code, Docker, Terraform",   onClick: onExportProject, disabled: !canSaveProject },
+  ];
 
   return (
     <>
       <div className="topbar">
 
-        {/* ── LEFT ─────────────────────────────────────────────────── */}
+        {/* ── LEFT: logo + File menu ─────────────────────────────── */}
         <div className="topbar-left">
           <div className="logo">⚡ ARCH</div>
-
-          <div className="topbar-file-actions">
-            <button className="btn btn-primary" onClick={handleNewClick}>
-              + New
-            </button>
-
-            <DropdownMenu
-              label="Open"
-              items={[
-                { label: "Open Project",   hint: "Load a saved .archbuilder.json file",      onClick: onOpenProject },
-                { label: "Import Folder",  hint: importingProject ? "Importing…" : "Scan an existing code directory", onClick: onImportProject, disabled: importingProject },
-                {
-                  label: "Add Service Folder",
-                  hint: "Scan code and add it as a new canvas service",
-                  onClick: () => onAddServiceProject?.(),
-                  disabled: importingProject || !onAddServiceProject,
-                },
-              ]}
-            />
-
-            <DropdownMenu
-              label="Save"
-              disabled={!canSaveProject}
-              items={[
-                { label: "Save Project",         hint: "Save to .archbuilder.json", onClick: onSaveProject,  disabled: !canSaveProject },
-                { label: "Export as IDE Project", hint: "Download ZIP with code, Docker, Terraform", onClick: onExportProject, disabled: !canSaveProject },
-              ]}
-            />
-          </div>
+          <DropdownMenu label="File" items={fileItems} />
         </div>
 
-        {/* ── CENTER: project identity ──────────────────────────────── */}
+        {/* ── CENTER: project identity ───────────────────────────── */}
         <div className="topbar-center">
           <div className="topbar-project-name">
             {projectName
@@ -399,66 +339,8 @@ export default function Topbar({
           </div>
         </div>
 
-        {/* ── RIGHT ────────────────────────────────────────────────── */}
+        {/* ── RIGHT: settings + logout ───────────────────────────── */}
         <div className="topbar-right">
-          {onRunGitOperation && (
-            <div className="topbar-repository">
-              <div className="topbar-repo-status">
-                <span className={`topbar-repo-dot ${gitRepositoryReady ? "ready" : ""}`} />
-                <span className="topbar-repo-name">
-                  {gitRepositoryReady ? (gitRepositoryName || projectName || "untitled") : "No repository"}
-                </span>
-                {gitRepositoryReady && (
-                  <>
-                    <span className="topbar-repo-sep">/</span>
-                    <span className="topbar-repo-branch">{gitCurrentBranch}</span>
-                  </>
-                )}
-              </div>
-              <select
-                className="topbar-git-select"
-                value={gitOperation}
-                onChange={(event) => setGitOperation?.(event.target.value as RepositoryGitOperation)}
-                title="Repository operation"
-              >
-                <option value="init">Init</option>
-                <option value="status">Status</option>
-                <option value="fetch">Fetch</option>
-                <option value="set-origin">Set origin</option>
-                <option value="pull">Pull</option>
-                <option value="push">Push</option>
-                <option value="rebase">Rebase</option>
-                <option value="merge">Merge</option>
-                <option value="stash">Stash</option>
-                <option value="stash-pop">Pop stash</option>
-                <option value="abort-rebase">Abort rebase</option>
-                <option value="abort-merge">Abort merge</option>
-              </select>
-              <select
-                className="topbar-git-select topbar-git-select--branch"
-                value={gitTargetBranch}
-                onChange={(event) => setGitTargetBranch?.(event.target.value)}
-                disabled={!gitRepositoryReady}
-                title="Target branch"
-              >
-                {selectedBranchOptions.map(branch => (
-                  <option key={branch} value={branch}>{branch}</option>
-                ))}
-              </select>
-              {gitOperation === "set-origin" && (
-                <input
-                  className="topbar-git-remote"
-                  value={gitRemoteUrl}
-                  onChange={(event) => setGitRemoteUrl?.(event.target.value)}
-                  placeholder="origin URL"
-                />
-              )}
-              <button className="btn topbar-git-run" onClick={onRunGitOperation} disabled={gitRunDisabled}>
-                {gitBusy ? "Git..." : "Run"}
-              </button>
-            </div>
-          )}
-
           <button className="btn topbar-icon-btn" onClick={onOpenSettings} title="Settings" aria-label="Settings">
             ⚙
           </button>
@@ -470,12 +352,11 @@ export default function Topbar({
       {step === "unsaved" && (
         <UnsavedChangesModal
           projectName={projectName}
-          onSaveAndContinue={handleSaveAndContinue}
+          onSaveAndContinue={() => { onSaveProject?.(); setStep("newProject"); }}
           onDiscardAndContinue={() => setStep("newProject")}
           onCancel={() => setStep("idle")}
         />
       )}
-
       {step === "newProject" && (
         <ProjectConfigModal
           initial={{ projectName: "", javaVersion, springBootVersion, buildTool }}
@@ -483,7 +364,6 @@ export default function Topbar({
           onClose={() => setStep("idle")}
         />
       )}
-
       {step === "editProject" && (
         <ProjectConfigModal
           title="Edit Project Settings"

@@ -12,14 +12,17 @@ use std::{
         Mutex,
     },
     thread,
+    time::{SystemTime, UNIX_EPOCH},
 };
-use tauri::{Emitter, Manager, State};
+use tauri::{Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 
 struct TerminalSession {
     master: Box<dyn MasterPty + Send>,
     child: Box<dyn Child + Send + Sync>,
     writer: Box<dyn Write + Send>,
 }
+
+static WINDOW_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 struct TerminalState {
     next_id: AtomicU64,
@@ -507,6 +510,30 @@ fn terminal_kill(state: State<'_, TerminalState>, id: String) -> Result<(), Stri
     Ok(())
 }
 
+#[tauri::command]
+fn open_project_window(app: tauri::AppHandle, launch_token: String) -> Result<(), String> {
+    let counter = WINDOW_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| error.to_string())?
+        .as_millis();
+    let label = format!("project-window-{}-{}", timestamp, counter);
+    let launch_token_json = serde_json::to_string(&launch_token).map_err(|error| error.to_string())?;
+
+    WebviewWindowBuilder::new(&app, label, WebviewUrl::default())
+        .title("Archiviz")
+        .inner_size(1200.0, 800.0)
+        .resizable(true)
+        .initialization_script(&format!(
+            "window.__ARCHIVIZ_LAUNCH_TOKEN__ = {};",
+            launch_token_json
+        ))
+        .build()
+        .map_err(|error| error.to_string())?;
+
+    Ok(())
+}
+
 // ── AI HTTP helpers (bypass WebView CORS) ─────────────────────────────────
 
 #[derive(Debug, Deserialize)]
@@ -634,6 +661,7 @@ pub fn run() {
             git_run,
             workspace_materialize,
             workspace_command,
+            open_project_window,
             ai_fetch,
             ai_stream
         ])

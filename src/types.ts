@@ -28,6 +28,8 @@ export type Edge = {
 
   toSide: "top" | "right" | "bottom" | "left";
 
+  label?: string;
+
 };
 
 export type Graph = {

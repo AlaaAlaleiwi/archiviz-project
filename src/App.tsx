@@ -17,7 +17,7 @@ import Canvas from "./components/Canvas";
 import CodePanel from "./components/CodePanel";
 import FileWorkspace, { type WorkspaceFile, type WorkspaceFileGroup } from "./components/FileWorkspace";
 import ApiTester from "./components/ApiTester";
-import Topbar, { ProjectConfigModal, type JavaProjectConfig, type RepositoryGitOperation } from "./components/Topbar";
+import Topbar, { ProjectConfigModal, type JavaProjectConfig } from "./components/Topbar";
 import Settings, {
   DEFAULT_DOCKER_SETTINGS,
   DEFAULT_EDITOR_SETTINGS,
@@ -83,9 +83,11 @@ const MIN_SCALE = 0.5;
 const MAX_SCALE = 2.4;
 const ZOOM_STEP = 1.14;
 const RECENT_PROJECTS_KEY = "archiviz_recent_projects";
+const RECENT_PROJECT_SNAPSHOT_PREFIX = "archiviz_recent_project_snapshot_";
 const MAX_RECENT_PROJECTS = 6;
 const AUTOSAVE_PROJECT_KEY = "archiviz_project_autosave";
 const AUTOSAVE_DEBOUNCE_MS = 900;
+const WINDOW_LAUNCH_PROJECT_PREFIX = "archiviz_window_launch_";
 const EDITOR_SETTINGS_KEY    = "archiviz_editor_settings";
 const DOCKER_SETTINGS_KEY    = "archiviz_docker_settings";
 const GIT_SETTINGS_KEY       = "archiviz_git_settings";
@@ -131,6 +133,9 @@ const loadNumberSetting = (key: string, fallback: number, min: number, max: numb
   return Number.isFinite(value) ? clamp(value, min, max) : fallback;
 };
 
+const getWindowLaunchProjectKey = (token: string) => `${WINDOW_LAUNCH_PROJECT_PREFIX}${token}`;
+const getRecentProjectSnapshotKey = (id: string) => `${RECENT_PROJECT_SNAPSHOT_PREFIX}${id}`;
+
 const getDraggedNodeType = (dataTransfer: DataTransfer): NodeType | null => {
   const typedPayload = dataTransfer.getData(NODE_DRAG_MIME).trim();
   if (typedPayload) return typedPayload;
@@ -148,6 +153,23 @@ const getDraggedNodeType = (dataTransfer: DataTransfer): NodeType | null => {
 const normalizePathKey = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/g, "");
 const toRepoSlug = (value: string) =>
   value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "service";
+
+const GENERIC_SERVICE_ALIAS_KEYS = new Set([
+  "service",
+  "services",
+  "app",
+  "application",
+  "api",
+  "backend",
+  "frontend",
+  "project",
+  "module",
+  "system",
+  "server",
+  "client",
+  "database",
+  "repo",
+]);
 
 const toServiceProjectRoot = (projectName: string, serviceName: string) =>
   `${toRepoSlug(projectName || "architecture-app")}-${toRepoSlug(serviceName)}`;
@@ -207,6 +229,131 @@ const getWorkspaceFilesForNode = (node: NodeData, files: WorkspaceFile[]) => {
     const normalizedPath = normalizePathKey(file.path);
     return candidates.some(candidate => normalizedPath.includes(candidate));
   });
+};
+
+const buildServiceAliases = (projectName: string, node: NodeData, serviceRoot: string) => {
+  const projectSlug = toRepoSlug(projectName || "architecture-app");
+  const rawValues = [
+    node.name,
+    serviceRoot,
+    typeof node.config?.importedProjectName === "string" ? node.config.importedProjectName : "",
+    serviceRoot.startsWith(`${projectSlug}-`) ? serviceRoot.slice(projectSlug.length + 1) : serviceRoot,
+  ];
+
+  const aliases = new Set<string>();
+  for (const raw of rawValues) {
+    const trimmed = raw.trim().toLowerCase();
+    if (!trimmed) continue;
+
+    const parts = trimmed.split(/[^a-z0-9]+/).filter(Boolean);
+    if (parts.length === 0) continue;
+
+    const variants = [
+      parts.join("-"),
+      parts.join("_"),
+      parts.join(""),
+      parts.join("."),
+    ];
+
+    for (const variant of variants) {
+      const key = variant.replace(/[^a-z0-9]+/g, "");
+      if (variant.length < 4 || GENERIC_SERVICE_ALIAS_KEYS.has(key)) continue;
+      aliases.add(variant);
+    }
+  }
+
+  return [...aliases];
+};
+
+const extractServiceReference = (content: string, aliases: string[]) => {
+  const normalized = content.toLowerCase();
+  for (const alias of aliases) {
+    const patterns = [
+      /@feignclient\s*\(([^)]*)\)/i,
+      /(?:https?|wss?|lb|grpc):\/\/[^\s"'`)]*/i,
+      /["'`](?:https?|wss?|lb|grpc):\/\/[^"'`\s)]*["'`]/i,
+      /["'`][^"'`\n]{0,160}(?:\/api\/[^"'`\n]*)?["'`]/i,
+    ];
+
+    for (const pattern of patterns) {
+      const match = normalized.match(pattern);
+      const value = match?.[0] ?? "";
+      if (!value.includes(alias)) continue;
+
+      if (pattern.source.includes("@feignclient")) {
+        return `feign:${alias}`;
+      }
+
+      return value.replace(/^["'`]|["'`]$/g, "").slice(0, 72);
+    }
+  }
+
+  return null;
+};
+
+const detectServiceCallEdges = ({
+  nodes,
+  edges,
+  files,
+  projectName,
+}: {
+  nodes: NodeData[];
+  edges: Edge[];
+  files: WorkspaceFile[];
+  projectName: string;
+}) => {
+  const existingPairs = new Set(edges.map(edge => `${edge.from}:${edge.to}`));
+  const serviceRoots = new Map<string, { node: NodeData; root: string; aliases: string[] }>();
+
+  for (const node of nodes) {
+    const root = getNodeServiceRoot(projectName, node);
+    if (!root) continue;
+    if (serviceRoots.has(root)) continue;
+    serviceRoots.set(root, {
+      node,
+      root,
+      aliases: buildServiceAliases(projectName, node, root),
+    });
+  }
+
+  const services = [...serviceRoots.values()];
+  const rootedFiles = new Map(
+    services.map(service => [
+      service.root,
+      files.filter(file => file.path.startsWith(`${service.root}/`) && !isHiddenWorkspacePlaceholder(file.path)),
+    ]),
+  );
+
+  const detectedEdges: Edge[] = [];
+
+  for (const source of services) {
+    const sourceFiles = rootedFiles.get(source.root) ?? [];
+    if (sourceFiles.length === 0) continue;
+
+    for (const target of services) {
+      if (source.node.id === target.node.id || target.aliases.length === 0) continue;
+
+      const pairKey = `${source.node.id}:${target.node.id}`;
+      if (existingPairs.has(pairKey)) continue;
+
+      const matchedReference = sourceFiles
+        .map(file => extractServiceReference(file.content, target.aliases))
+        .find((value): value is string => Boolean(value));
+      if (!matchedReference) continue;
+
+      existingPairs.add(pairKey);
+      detectedEdges.push({
+        id: `svc-auto:${source.node.id}:${target.node.id}`,
+        from: source.node.id,
+        to: target.node.id,
+        fromSide: "right",
+        toSide: "left",
+        label: matchedReference,
+      });
+    }
+  }
+
+  return detectedEdges;
 };
 
 const isSharedProjectFile = (path: string) => {
@@ -437,6 +584,30 @@ type WorkspaceCommandResult = {
 
 type AutoSaveStatus = "idle" | "saving" | "saved" | "error";
 
+const toRecentProjectId = (project: { name: string; path?: string; fileName?: string }) =>
+  project.path || project.fileName || project.name;
+
+const persistRecentProjectSnapshot = (id: string, project: SavedProjectFile) => {
+  try {
+    localStorage.setItem(getRecentProjectSnapshotKey(id), JSON.stringify(project));
+  } catch (error) {
+    console.warn("[recent-project-snapshot]", error);
+  }
+};
+
+const loadRecentProjectSnapshot = (id: string): Partial<SavedProjectFile> | null => {
+  try {
+    const saved = localStorage.getItem(getRecentProjectSnapshotKey(id));
+    return saved ? JSON.parse(saved) as Partial<SavedProjectFile> : null;
+  } catch {
+    return null;
+  }
+};
+
+const removeRecentProjectSnapshots = (ids: string[]) => {
+  ids.forEach(id => localStorage.removeItem(getRecentProjectSnapshotKey(id)));
+};
+
 const isSavedProjectFile = (parsed: Partial<SavedProjectFile>): parsed is SavedProjectFile => (
   parsed.version === 1 &&
   !!parsed.graph &&
@@ -583,9 +754,9 @@ export default function App() {
 
   const [theme, setTheme] = useState<AppTheme>(() => {
     const saved = localStorage.getItem("archiviz_theme");
-    return saved === "black" || saved === "red" || saved === "purple" || saved === "green" || saved === "blue"
+    return saved === "black" || saved === "red" || saved === "purple" || saved === "green" || saved === "blue" || saved === "glass"
       ? saved
-      : "black";
+      : "glass";
   });
   const [colorScheme, setColorScheme] = useState<"dark" | "light">(() => {
     const saved = localStorage.getItem("archiviz_color_scheme");
@@ -623,6 +794,7 @@ export default function App() {
   const [projectName, setProjectName] = useState("architecture-app");
   const [importingProject, setImportingProject] = useState(false);
   const [projectFileHandle, setProjectFileHandle] = useState<FileSystemFileHandle | null>(null);
+  const [activeRecentProjectId, setActiveRecentProjectId] = useState<string | null>(null);
   const [activeProjectStarted, setActiveProjectStarted] = useState(false);
   const [showStartupProjectConfig, setShowStartupProjectConfig] = useState(false);
   const [recentProjects, setRecentProjects] = useState<RecentProject[]>(loadRecentProjects);
@@ -650,12 +822,6 @@ export default function App() {
   const [buildDiagnostics, setBuildDiagnostics] = useState<BuildDiagnostic[]>([]);
   const [workspaceView, setWorkspaceView] = useState<"canvas" | "editor" | "api" | null>("canvas");
   const [gitRepositoryReady, setGitRepositoryReady] = useState(false);
-  const [topbarGitBusy, setTopbarGitBusy] = useState(false);
-  const [topbarGitOperation, setTopbarGitOperation] = useState<RepositoryGitOperation>("init");
-  const [topbarGitRemoteUrl, setTopbarGitRemoteUrl] = useState("");
-  const [topbarGitCurrentBranch, setTopbarGitCurrentBranch] = useState("main");
-  const [topbarGitTargetBranch, setTopbarGitTargetBranch] = useState("main");
-  const [topbarGitBranches, setTopbarGitBranches] = useState<string[]>([]);
   const [projectGenerating, setProjectGenerating] = useState(false);
   const [generationProgress, setGenerationProgress] = useState<GenerationProgress>(null);
   const [codeAgentRunning, setCodeAgentRunning] = useState(false);
@@ -678,6 +844,8 @@ export default function App() {
   const toggleWorkspaceView = useCallback((view: "canvas" | "editor" | "api") => {
     setWorkspaceView(current => current === view ? null : view);
   }, []);
+
+  const showTopbar = activeProjectStarted && !viewingNodeId;
 
   useEffect(() => {
     localStorage.setItem("archiviz_theme", theme);
@@ -820,6 +988,9 @@ export default function App() {
         localStorage.setItem(AUTOSAVE_PROJECT_KEY, json);
         setAutosavedProject(payload);
         setLastAutoSavedAt(payload.savedAt);
+        if (activeRecentProjectId) {
+          persistRecentProjectSnapshot(activeRecentProjectId, payload);
+        }
 
         if (projectFileHandle) {
           const writable = await projectFileHandle.createWritable();
@@ -836,7 +1007,7 @@ export default function App() {
     }, AUTOSAVE_DEBOUNCE_MS);
 
     return () => window.clearTimeout(timeout);
-  }, [activeProjectStarted, buildProjectPayload, projectFileHandle]);
+  }, [activeProjectStarted, activeRecentProjectId, buildProjectPayload, projectFileHandle]);
 
   /* =======================
      GRAPH ACTIONS
@@ -1149,9 +1320,7 @@ export default function App() {
     setBuildDiagnostics([]);
     setWorkspaceView("canvas");
     setGitRepositoryReady(false);
-    setTopbarGitBranches([]);
-    setTopbarGitCurrentBranch("main");
-    setTopbarGitTargetBranch("main");
+    setActiveRecentProjectId(null);
     setCamera({ x: 120, y: 72, scale: 1 });
   }, []);
 
@@ -1171,6 +1340,7 @@ export default function App() {
     setPan(null);
     setCamera({ x: 120, y: 72, scale: 1 });
     setProjectFileHandle(null);
+    setActiveRecentProjectId(null);
     setNodeCode({});
     setWorkspaceFiles([]);
     setWorkspaceFilesImported(false);
@@ -1178,9 +1348,6 @@ export default function App() {
     setBuildDiagnostics([]);
     setWorkspaceView("canvas");
     setGitRepositoryReady(false);
-    setTopbarGitBranches([]);
-    setTopbarGitCurrentBranch("main");
-    setTopbarGitTargetBranch("main");
     lastSavedSignatureRef.current = "";
     setAutoSaveStatus("idle");
   }, []);
@@ -1220,16 +1387,13 @@ export default function App() {
     setBuildDiagnostics([]);
     setWorkspaceView(restoredFiles.length > 0 ? "editor" : "canvas");
     setGitRepositoryReady(false);
-    setTopbarGitBranches([]);
-    setTopbarGitCurrentBranch("main");
-    setTopbarGitTargetBranch("main");
   }, []);
 
   const validateProjectData = (parsed: Partial<SavedProjectFile>): parsed is SavedProjectFile => isSavedProjectFile(parsed);
 
   const rememberRecentProject = useCallback((project: { name: string; path?: string; fileName?: string }) => {
+    const id = toRecentProjectId(project);
     setRecentProjects(prev => {
-      const id = project.path || project.fileName || project.name;
       const nextProject: RecentProject = {
         id,
         name: project.name || project.fileName || "Untitled project",
@@ -1241,10 +1405,18 @@ export default function App() {
         nextProject,
         ...prev.filter(item => item.id !== id),
       ].slice(0, MAX_RECENT_PROJECTS);
+      const removedIds = prev
+        .map(item => item.id)
+        .filter(prevId => !next.some(item => item.id === prevId));
+
+      if (removedIds.length > 0) {
+        removeRecentProjectSnapshots(removedIds);
+      }
 
       localStorage.setItem(RECENT_PROJECTS_KEY, JSON.stringify(next));
       return next;
     });
+    return id;
   }, []);
 
   const openParsedProject = useCallback((
@@ -1252,9 +1424,15 @@ export default function App() {
     options: { handle?: FileSystemFileHandle | null; path?: string; fileName?: string } = {}
   ) => {
     if (!validateProjectData(parsed)) throw new Error("Invalid project file");
+    const recentProjectId = toRecentProjectId({
+      name: parsed.projectName,
+      path: options.path,
+      fileName: options.fileName,
+    });
     buildOnOpenRef.current = true;
     applyProjectData(parsed);
     setProjectFileHandle(options.handle ?? null);
+    setActiveRecentProjectId(recentProjectId);
     setActiveProjectStarted(true);
     lastSavedSignatureRef.current = getProjectSignature(parsed);
     setAutoSaveStatus("saved");
@@ -1264,6 +1442,7 @@ export default function App() {
       path: options.path,
       fileName: options.fileName,
     });
+    persistRecentProjectSnapshot(recentProjectId, parsed);
   }, [applyProjectData, rememberRecentProject]);
 
   const onLoadProject = useCallback(() => {
@@ -1303,9 +1482,33 @@ export default function App() {
   }, [openParsedProject]);
 
   const onOpenRecentProject = useCallback(async (recent: RecentProject) => {
-    alert(`"${recent.name}" needs to be selected again from disk.`);
+    const cachedProject = loadRecentProjectSnapshot(recent.id);
+    if (cachedProject && validateProjectData(cachedProject)) {
+      openParsedProject(cachedProject, {
+        path: recent.path,
+        fileName: recent.fileName,
+      });
+      return;
+    }
+
+    alert(`Could not reopen "${recent.name}" from its cached snapshot. Please select the project file again.`);
     projectFileInputRef.current?.click();
-  }, []);
+  }, [openParsedProject]);
+
+  const onOpenProjectInNewWindow = useCallback(async () => {
+    const payload = buildProjectPayload();
+    const launchToken = `${Date.now()}-${genId()}`;
+    const launchKey = getWindowLaunchProjectKey(launchToken);
+
+    try {
+      localStorage.setItem(launchKey, JSON.stringify(payload));
+      await invoke("open_project_window", { launchToken });
+    } catch (error) {
+      localStorage.removeItem(launchKey);
+      console.error("[window-open]", error);
+      alert("Could not open a new project window.");
+    }
+  }, [buildProjectPayload]);
 
   const resumeAutosavedProject = useCallback(() => {
     if (!autosavedProject) return;
@@ -1318,6 +1521,34 @@ export default function App() {
     setLastAutoSavedAt(null);
     setAutoSaveStatus("idle");
   }, []);
+
+  useEffect(() => {
+    const launchToken = (window as Window & { __ARCHIVIZ_LAUNCH_TOKEN__?: string }).__ARCHIVIZ_LAUNCH_TOKEN__;
+    if (!launchToken) return;
+
+    const launchKey = getWindowLaunchProjectKey(launchToken);
+    const raw = localStorage.getItem(launchKey);
+    if (!raw) return;
+
+    localStorage.removeItem(launchKey);
+
+    try {
+      const parsed = JSON.parse(raw) as Partial<SavedProjectFile>;
+      if (!validateProjectData(parsed)) throw new Error("Invalid project handoff payload");
+
+      buildOnOpenRef.current = true;
+      applyProjectData(parsed);
+      setProjectFileHandle(null);
+      setActiveRecentProjectId(null);
+      setActiveProjectStarted(true);
+      setAutosavedProject(parsed);
+      lastSavedSignatureRef.current = getProjectSignature(parsed);
+      setAutoSaveStatus("saved");
+      setLastAutoSavedAt(parsed.savedAt);
+    } catch (error) {
+      console.error("[window-launch]", error);
+    }
+  }, [applyProjectData]);
 
   const onProjectFolderSelected = useCallback(
     async (e: ChangeEvent<HTMLInputElement>) => {
@@ -1390,24 +1621,33 @@ export default function App() {
               };
             })
             .filter((edge): edge is Edge => Boolean(edge));
+          const mergedFiles = dedupeFiles([...workspaceFiles, ...serviceFiles]);
+          const mergedNodes = [...graph.nodes, ...importedNodes];
+          const mergedEdges = [...graph.edges, ...importedEdges];
+          const detectedServiceEdges = detectServiceCallEdges({
+            nodes: mergedNodes,
+            edges: mergedEdges,
+            files: mergedFiles,
+            projectName,
+          });
           const nextGraph = {
             ...graph,
-            nodes: [...graph.nodes, ...importedNodes],
-            edges: [...graph.edges, ...importedEdges],
+            nodes: mergedNodes,
+            edges: [...mergedEdges, ...detectedServiceEdges],
           };
           const nextNodeCode = Object.fromEntries(
             importedNodes.map(node => [node.id, getWorkspaceFilesForNode(node, serviceFiles)])
           );
 
           setGraph(nextGraph);
-          setWorkspaceFiles(prev => dedupeFiles([...prev, ...serviceFiles]));
+          setWorkspaceFiles(mergedFiles);
           setNodeCode(prev => ({ ...prev, ...nextNodeCode }));
           setActiveWorkspacePath(serviceFiles[0]?.path ?? null);
           setActiveWorkspaceGroupId("all");
           setWorkspaceView("editor");
           setActiveProjectStarted(true);
           setPrompt(buildAIPrompt(nextGraph, javaVersion, springBootVersion, projectName, buildTool, {
-            existingFiles: dedupeFiles([...workspaceFiles, ...serviceFiles]),
+            existingFiles: mergedFiles,
           }));
           return;
         }
@@ -1487,6 +1727,12 @@ export default function App() {
         const writable = await projectFileHandle.createWritable();
         await writable.write(json);
         await writable.close();
+        const recentProjectId = rememberRecentProject({
+          name: payload.projectName,
+          fileName: projectFileHandle.name,
+        });
+        setActiveRecentProjectId(recentProjectId);
+        persistRecentProjectSnapshot(recentProjectId, payload);
         markSaved();
       } catch (err) {
         console.error(err);
@@ -1504,6 +1750,12 @@ export default function App() {
         const writable = await handle.createWritable();
         await writable.write(json);
         await writable.close();
+        const recentProjectId = rememberRecentProject({
+          name: payload.projectName,
+          fileName: handle.name,
+        });
+        setActiveRecentProjectId(recentProjectId);
+        persistRecentProjectSnapshot(recentProjectId, payload);
         markSaved();
       } catch (err: any) {
         if (err.name !== "AbortError") console.error(err);
@@ -1513,8 +1765,14 @@ export default function App() {
 
     // Fallback for browsers without File System Access API
     saveAs(new Blob([json], { type: "application/json;charset=utf-8" }), `${projectName || "project"}.archbuilder.json`);
+    const recentProjectId = rememberRecentProject({
+      name: payload.projectName,
+      fileName: `${projectName || "project"}.archbuilder.json`,
+    });
+    setActiveRecentProjectId(recentProjectId);
+    persistRecentProjectSnapshot(recentProjectId, payload);
     markSaved();
-  }, [buildProjectPayload, projectFileHandle, projectName]);
+  }, [buildProjectPayload, projectFileHandle, projectName, rememberRecentProject]);
 
   /* =======================
      EXPORT TO IDE ZIP
@@ -1691,113 +1949,15 @@ export default function App() {
     const files = getActiveGitFiles();
     try {
       const status = await runTopbarGit(["status", "--short", "--branch"], files);
-      const branchList = await runTopbarGit(["branch", "--list"], files);
-
-      const parsedBranches = branchList.stdout.split(/\r?\n/)
-        .map(line => line.trim())
-        .filter(Boolean)
-        .map(line => line.replace(/^\*\s*/, ""));
-      const active = branchList.stdout.split(/\r?\n/).find(line => line.startsWith("* "));
-      const activeBranch = active?.replace(/^\*\s*/, "").trim();
-
-      setGitRepositoryReady(status.isRepository || branchList.isRepository);
-      setTopbarGitBranches(parsedBranches);
-      if (activeBranch) {
-        setTopbarGitCurrentBranch(activeBranch);
-        setTopbarGitTargetBranch(prev => prev && parsedBranches.includes(prev) ? prev : activeBranch);
-      }
+      setGitRepositoryReady(status.isRepository);
     } catch {
       setGitRepositoryReady(false);
-      setTopbarGitBranches([]);
     }
   }, [getActiveGitFiles, runTopbarGit]);
 
   useEffect(() => {
     void refreshTopbarGit();
   }, [refreshTopbarGit]);
-
-  const runTopbarGitOperation = useCallback(async () => {
-    const runnableFiles = getActiveGitFiles();
-    const currentBranch = topbarGitCurrentBranch || "main";
-    const targetBranch = topbarGitTargetBranch || currentBranch;
-    const run = async (args: string[]) => runTopbarGit(args, runnableFiles);
-
-    setTopbarGitBusy(true);
-    try {
-      if (!activeServiceGroup && serviceFileGroups.length > 1 && ["set-origin", "pull", "push"].includes(topbarGitOperation)) {
-        alert("Select a service in the editor before setting a remote, pulling, or pushing. Each service uses its own repository.");
-        return;
-      }
-
-      if (topbarGitOperation === "init") {
-        const targets = !activeServiceGroup && serviceFileGroups.length > 1
-          ? serviceFileGroups
-          : [{ id: activeServiceGroup?.id ?? "all", label: activeServiceGroup?.label ?? projectName, files: runnableFiles }];
-
-        for (const target of targets) {
-          const targetNode = graph.nodes.find(node => node.id === target.id);
-          const targetProjectName = target.id === "all"
-            ? projectName
-            : targetNode
-              ? getNodeServiceRoot(projectName, targetNode)
-              : toServiceProjectRoot(projectName, target.label);
-          const result = await runTopbarGit(["init"], target.files, targetProjectName);
-          if (result?.ok || result?.isRepository) {
-            await runTopbarGit(["branch", "-M", currentBranch], target.files, targetProjectName);
-          }
-        }
-        if (targets.length > 0) {
-          setGitRepositoryReady(true);
-          setWorkspaceView("editor");
-        }
-      } else if (topbarGitOperation === "status") {
-        await refreshTopbarGit();
-      } else if (topbarGitOperation === "fetch") {
-        await run(["fetch", "--all", "--prune"]);
-      } else if (topbarGitOperation === "set-origin") {
-        const url = topbarGitRemoteUrl.trim();
-        if (!url) {
-          alert("Enter an origin remote URL first.");
-          return;
-        }
-        await run(["remote", "remove", "origin"]);
-        await run(["remote", "add", "origin", url]);
-      } else if (topbarGitOperation === "pull") {
-        await run(["pull", "origin", currentBranch]);
-      } else if (topbarGitOperation === "push") {
-        await run(["push", "-u", "origin", currentBranch]);
-      } else if (topbarGitOperation === "rebase") {
-        await run(["rebase", targetBranch]);
-      } else if (topbarGitOperation === "merge") {
-        await run(["merge", targetBranch]);
-      } else if (topbarGitOperation === "stash") {
-        await run(["stash", "push", "-u", "-m", "Archiviz workspace snapshot"]);
-      } else if (topbarGitOperation === "stash-pop") {
-        await run(["stash", "pop"]);
-      } else if (topbarGitOperation === "abort-rebase") {
-        await run(["rebase", "--abort"]);
-      } else if (topbarGitOperation === "abort-merge") {
-        await run(["merge", "--abort"]);
-      }
-
-      await refreshTopbarGit();
-    } catch (error: any) {
-      alert(error?.message ?? "Git operation failed.");
-    } finally {
-      setTopbarGitBusy(false);
-    }
-  }, [
-    activeServiceGroup,
-    getActiveGitFiles,
-    projectName,
-    refreshTopbarGit,
-    runTopbarGit,
-    serviceFileGroups,
-    topbarGitCurrentBranch,
-    topbarGitOperation,
-    topbarGitRemoteUrl,
-    topbarGitTargetBranch,
-  ]);
 
   const runProjectCommand = useCallback(async (mode: "build" | "run") => {
     try {
@@ -2271,6 +2431,7 @@ export default function App() {
                   <button
                     className="startup-history-clear"
                     onClick={() => {
+                      removeRecentProjectSnapshots(recentProjects.map(project => project.id));
                       setRecentProjects([]);
                       localStorage.removeItem(RECENT_PROJECTS_KEY);
                     }}
@@ -2315,41 +2476,32 @@ export default function App() {
         />
       )}
 
-      <Topbar
-        canSaveProject={hasProjectData}
-        hasUnsavedChanges={hasUnsavedChanges}
-        autoSaveLabel={activeProjectStarted ? autoSaveLabel : undefined}
-        importingProject={importingProject}
-        javaVersion={javaVersion}
-        setJavaVersion={setJavaVersion}
-        springBootVersion={springBootVersion}
-        setSpringBootVersion={setSpringBootVersion}
-        detectedLanguage={language}
-        detectedFramework={detectedFramework}
-        projectName={projectName}
-        setProjectName={setProjectName}
-        buildTool={buildTool}
-        setBuildTool={setBuildTool}
-        onOpenSettings={() => setShowSettings(true)}
-        onCreateProject={createNewProject}
-        onOpenProject={onOpenSavedProject}
-        onImportProject={onLoadProject}
-        onAddServiceProject={onAddServiceProject}
-        onSaveProject={saveProject}
-        onExportProject={exportProject}
-        gitRepositoryReady={gitRepositoryReady}
-        gitBusy={topbarGitBusy}
-        gitOperation={topbarGitOperation}
-        setGitOperation={setTopbarGitOperation}
-        gitRemoteUrl={topbarGitRemoteUrl}
-        setGitRemoteUrl={setTopbarGitRemoteUrl}
-        gitCurrentBranch={topbarGitCurrentBranch}
-        gitRepositoryName={activeServiceGroup ? activeServiceProjectName : undefined}
-        gitTargetBranch={topbarGitTargetBranch}
-        setGitTargetBranch={setTopbarGitTargetBranch}
-        gitBranches={topbarGitBranches}
-        onRunGitOperation={runTopbarGitOperation}
-      />
+      {showTopbar && (
+        <Topbar
+          canSaveProject={hasProjectData}
+          hasUnsavedChanges={hasUnsavedChanges}
+          autoSaveLabel={activeProjectStarted ? autoSaveLabel : undefined}
+          importingProject={importingProject}
+          javaVersion={javaVersion}
+          setJavaVersion={setJavaVersion}
+          springBootVersion={springBootVersion}
+          setSpringBootVersion={setSpringBootVersion}
+          detectedLanguage={language}
+          detectedFramework={detectedFramework}
+          projectName={projectName}
+          setProjectName={setProjectName}
+          buildTool={buildTool}
+          setBuildTool={setBuildTool}
+          onOpenSettings={() => setShowSettings(true)}
+          onCreateProject={createNewProject}
+          onOpenProject={onOpenSavedProject}
+          onImportProject={onLoadProject}
+          onOpenProjectInNewWindow={onOpenProjectInNewWindow}
+          onAddServiceProject={onAddServiceProject}
+          onSaveProject={saveProject}
+          onExportProject={exportProject}
+        />
+      )}
 
       <div className="main">
         <div className="workspace-shell">
@@ -2358,12 +2510,12 @@ export default function App() {
               <button
                 className={`workspace-rail-btn ${workspaceView === "canvas" ? "active" : ""}`}
                 onClick={() => toggleWorkspaceView("canvas")}
-                title={workspaceView === "canvas" ? "Close components" : "Open components"}
-                aria-label="Components"
+                title={workspaceView === "canvas" ? "Close canvas" : "Open canvas"}
+                aria-label="Canvas"
                 aria-pressed={workspaceView === "canvas"}
               >
                 <span className="workspace-rail-icon">C</span>
-                <span className="workspace-rail-label">Components</span>
+                <span className="workspace-rail-label">Canvas</span>
               </button>
               <button
                 className={`workspace-rail-btn ${workspaceView === "editor" ? "active" : ""}`}

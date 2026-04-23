@@ -256,7 +256,7 @@ export default function Palette({ embedded = false, workspaceFiles = [], onDropN
         {isOpen && <div className="paletteHeader">COMPONENTS</div>}
         {!embedded && (
           <button
-            className="panelCollapseBtn"
+            className="btn panelCollapseBtn"
             onClick={() => setIsOpen(!isOpen)}
             title={isOpen ? "Collapse panel" : "Expand panel"}
           >
@@ -317,7 +317,7 @@ export default function Palette({ embedded = false, workspaceFiles = [], onDropN
                   value={newItem.desc}
                   onChange={(e) => setNewItem({ ...newItem, desc: e.target.value })}
                 />
-                <button className="paletteAddBtn" onClick={addService}>
+                <button className="btn btn-primary workspace-wide-btn" onClick={addService}>
                   + Add Service
                 </button>
               </div>

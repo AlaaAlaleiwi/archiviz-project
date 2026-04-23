@@ -127,8 +127,7 @@ export default function CodePanel({
   canRunCodeAgent,
   aiModelLabel,
 }: CodePanelProps) {
-  const [isOpen, setIsOpen] = useState(true);
-  const [activeTab, setActiveTab] = useState<PanelTab>("prompt");
+  const [activeTab, setActiveTab] = useState<PanelTab | null>("prompt");
   const [commitMessage, setCommitMessage] = useState("");
   const [currentBranch, setCurrentBranch] = useState("main");
   const [commits, setCommits] = useState<string[]>([]);
@@ -347,13 +346,15 @@ export default function CodePanel({
 
   const hasChanges = gitChanges.length > 0;
   const hasOrigin = originUrl.trim().length > 0;
-
+  const toggleTab = (tab: PanelTab) => {
+    setActiveTab(current => current === tab ? null : tab);
+  };
   return (
     <div
-      className={`code-panel${isOpen ? "" : " code-panel--collapsed"}${onResizeStart ? " code-panel--resizable" : ""}`}
-      style={isOpen && width ? { width, flexBasis: width } : undefined}
+      className={`code-panel${activeTab ? "" : " code-panel--collapsed"}${onResizeStart ? " code-panel--resizable" : ""}`}
+      style={activeTab && width ? { width, flexBasis: width } : undefined}
     >
-      {isOpen && onResizeStart && (
+      {activeTab && onResizeStart && (
         <div
           className="panel-resize-handle panel-resize-handle--left"
           onPointerDown={onResizeStart}
@@ -364,38 +365,33 @@ export default function CodePanel({
         />
       )}
       <div className="code-header workspace-header">
-        <button
-          className="panelCollapseBtn"
-          onClick={() => setIsOpen(!isOpen)}
-          title={isOpen ? "Collapse panel" : "Expand panel"}
-        >
-          {isOpen ? ">" : "<"}
-        </button>
-        {isOpen && (
-          <div className="workspace-tabs" role="tablist" aria-label="Workspace tools">
-            {(["prompt", "git"] as PanelTab[]).map(tab => (
-              <button
-                key={tab}
-                className={`workspace-tab ${activeTab === tab ? "active" : ""}`}
-                onClick={() => setActiveTab(tab)}
-                role="tab"
-                aria-selected={activeTab === tab}
-              >
-                {tab === "prompt" ? "Prompt + AI" : (
-                  <>
-                    Git
-                    {hasChanges && (
-                      <span className="git-tab-badge">{changedFilesCount}</span>
-                    )}
-                  </>
+        {activeTab && <div className="paletteHeader code-panel-header-title"></div>}
+        <div className="paletteTabs code-panel-tabs" role="tablist" aria-label="Workspace tools">
+          {(["prompt", "git"] as PanelTab[]).map(tab => (
+            <button
+              key={tab}
+              className={`paletteTab code-panel-tab ${activeTab === tab ? "active" : ""}`}
+              onClick={() => toggleTab(tab)}
+              role="tab"
+              aria-selected={activeTab === tab}
+            >
+              <span className="code-panel-tab-icon-wrap">
+                <span className="code-panel-tab-icon" aria-hidden="true">
+                  {tab === "prompt" ? "AI" : "G"}
+                </span>
+                {tab === "git" && hasChanges && (
+                  <span className="code-panel-tab-badge">{changedFilesCount}</span>
                 )}
-              </button>
-            ))}
-          </div>
-        )}
+              </span>
+              <span className="code-panel-tab-label">
+                {tab === "prompt" ? "AI" : "Git"}
+              </span>
+            </button>
+          ))}
+        </div>
       </div>
 
-      {isOpen && activeTab === "prompt" && (
+      {activeTab === "prompt" && (
         <div className="code-body prompt-ai-body">
           <div className="prompt-ai-heading">
             <div className="workspace-section-title">Architecture Prompt</div>
@@ -464,7 +460,7 @@ export default function CodePanel({
         </div>
       )}
 
-      {isOpen && activeTab === "git" && (
+      {activeTab === "git" && (
         <div className="workspace-tool-body">
 
           {/* ── Header bar ── */}
