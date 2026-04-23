@@ -210,6 +210,8 @@ interface TopbarProps {
   setSpringBootVersion: (v: SpringBootVersion) => void;
   detectedLanguage?: Language;
   detectedFramework?: string;
+  workspaceName: string;
+  setWorkspaceName: (n: string) => void;
   projectName: string;
   setProjectName: (n: string) => void;
   buildTool: BuildTool;
@@ -231,6 +233,7 @@ export default function Topbar({
   javaVersion, setJavaVersion,
   springBootVersion, setSpringBootVersion,
   detectedLanguage = "java", detectedFramework,
+  workspaceName, setWorkspaceName,
   projectName, setProjectName,
   buildTool, setBuildTool,
   onOpenSettings,
@@ -251,6 +254,7 @@ export default function Topbar({
     setSpringBootVersion(cfg.springBootVersion);
     setBuildTool(cfg.buildTool);
     setProjectName(cfg.projectName);
+    setWorkspaceName("My Workspace");
     setStep("idle");
   };
 
@@ -292,50 +296,16 @@ export default function Topbar({
           <DropdownMenu label="File" items={fileItems} />
         </div>
 
-        {/* ── CENTER: project identity ───────────────────────────── */}
+        {/* ── CENTER: workspace identity ───────────────────────────── */}
         <div className="topbar-center">
-          <div className="topbar-project-name">
-            {projectName
-              ? <>
-                  {projectName}
-                  {hasUnsavedChanges && <span className="unsaved-dot" title="Unsaved changes">●</span>}
-                </>
-              : <span className="topbar-project-placeholder">Untitled Project</span>
-            }
-            <button className="topbar-edit-btn" onClick={() => setStep("editProject")} title="Edit project settings">
-              ✎
-            </button>
-          </div>
-          <div className="topbar-project-meta">
-            {detectedLanguage === "java" ? (
-              <>
-                <span className="topbar-lang-badge">☕</span>
-                <span className="topbar-meta-sep">·</span>
-                <span className="topbar-meta-text">Java {javaVersion}</span>
-                <span className="topbar-meta-sep">·</span>
-                <span className="topbar-meta-text">{detectedFramework || `Spring Boot ${springBootVersion}`}</span>
-                <span className="topbar-meta-sep">·</span>
-                <span className="topbar-meta-text">{buildTool}</span>
-              </>
-            ) : (
-              <>
-                <span className="topbar-lang-badge">◆</span>
-                <span className="topbar-meta-sep">·</span>
-                <span className="topbar-meta-text">{detectedLanguage}</span>
-                {detectedFramework && (
-                  <>
-                    <span className="topbar-meta-sep">·</span>
-                    <span className="topbar-meta-text">{detectedFramework}</span>
-                  </>
-                )}
-              </>
-            )}
-            {autoSaveLabel && (
-              <>
-                <span className="topbar-meta-sep">·</span>
-                <span className="topbar-autosave">{autoSaveLabel}</span>
-              </>
-            )}
+          <div className="topbar-workspace-name">
+            <input
+              className="topbar-workspace-input"
+              value={workspaceName}
+              onChange={(e) => setWorkspaceName(e.target.value)}
+              placeholder="Workspace name"
+              title="Edit workspace name"
+            />
           </div>
         </div>
 

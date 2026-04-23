@@ -791,6 +791,7 @@ export default function App() {
 
   const [prompt, setPrompt] = useState("");
 
+  const [workspaceName, setWorkspaceName] = useState("My Workspace");
   const [projectName, setProjectName] = useState("architecture-app");
   const [importingProject, setImportingProject] = useState(false);
   const [projectFileHandle, setProjectFileHandle] = useState<FileSystemFileHandle | null>(null);
@@ -2488,6 +2489,8 @@ export default function App() {
           setSpringBootVersion={setSpringBootVersion}
           detectedLanguage={language}
           detectedFramework={detectedFramework}
+          workspaceName={workspaceName}
+          setWorkspaceName={setWorkspaceName}
           projectName={projectName}
           setProjectName={setProjectName}
           buildTool={buildTool}
