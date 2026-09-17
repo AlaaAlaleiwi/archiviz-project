@@ -51,6 +51,8 @@ import { parseStackDiagnostics } from "./utils/testOutput";
 import { secretGet, secretSet } from "./utils/secureStore";
 import { applyGenerationPlan, createGenerationPlan, type GenerationChange } from "./utils/generationPlan";
 import { createHistory, recordHistory, redoHistory, undoHistory, type WorkspaceHistory } from "./utils/workspaceHistory";
+import { migrateFromSavedProject, isArchitectureModel } from "./utils/architectureModelMigration";
+import type { ArchitectureModel } from "./utils/architectureModel";
 import { useDialogFocus } from "./useDialogFocus";
 import { isTauriRuntime } from "./utils/tauriRuntime";
 
@@ -587,6 +589,7 @@ type SavedProjectFile = {
   nodeCode?: Record<string, WorkspaceFile[]>;
   workspaceFiles?: WorkspaceFile[];
   dockerSettings?: DockerSettings;
+  model?: ArchitectureModel;
 };
 
 type RecentProject = {
@@ -687,7 +690,7 @@ const isSavedProjectFile = (parsed: Partial<SavedProjectFile>): parsed is SavedP
 );
 
 const getProjectSignature = (project: SavedProjectFile) => {
-  const { savedAt: _savedAt, ...snapshot } = project;
+  const { savedAt: _savedAt, model: _model, ...snapshot } = project;
   return JSON.stringify(snapshot);
 };
 
@@ -813,7 +816,7 @@ const loadGitSettings = (): GitSettings => {
   }
 };
 
-export default function App() {
+export default function App({ onLogout }: { onLogout?: () => void }) {
   /* =======================
      STATE
   ======================= */
@@ -822,7 +825,7 @@ export default function App() {
     const saved = localStorage.getItem("archiviz_theme");
     return saved === "black" || saved === "red" || saved === "purple" || saved === "green" || saved === "blue" || saved === "glass"
       ? saved
-      : "glass";
+      : "black";
   });
   const [colorScheme, setColorScheme] = useState<"dark" | "light">(() => {
     const saved = localStorage.getItem("archiviz_color_scheme");
@@ -954,6 +957,33 @@ export default function App() {
   const workspaceHistoryRef = useRef<WorkspaceHistory<WorkspaceSnapshot> | null>(null);
   const applyingHistoryRef = useRef(false);
   const [historyVersion, setHistoryVersion] = useState(0);
+
+  const [architectureModel, setArchitectureModel] = useState<ArchitectureModel | null>(null);
+
+  const derivedArchitectureModel = useMemo<ArchitectureModel | null>(() => {
+    if (!activeProjectStarted) return null;
+    const allFiles: WorkspaceFile[] = workspaceFiles.length > 0
+      ? workspaceFiles
+      : Object.values(nodeCode).flat();
+    try {
+      const { model } = migrateFromSavedProject({
+        version: 1,
+        projectName,
+        graph,
+        nodeCode,
+        workspaceFiles: allFiles,
+        javaVersion,
+        springBootVersion,
+        language,
+        detectedFramework,
+        prompt,
+      });
+      return model;
+    } catch {
+      const existing = architectureModel;
+      return existing;
+    }
+  }, [activeProjectStarted, projectName, graph, nodeCode, workspaceFiles, javaVersion, springBootVersion, language, detectedFramework, prompt, architectureModel]);
 
   const toggleWorkspaceView = useCallback((view: "canvas" | "build" | "editor" | "api") => {
     setWorkspaceView(current => current === view ? null : view);
@@ -1116,7 +1146,8 @@ export default function App() {
     nodeCode,
     workspaceFiles,
     dockerSettings,
-  }), [buildTool, dockerSettings, graph, javaVersion, nodeCode, projectName, prompt, springBootVersion, workspaceFiles]);
+    model: derivedArchitectureModel ?? undefined,
+  }), [buildTool, dockerSettings, derivedArchitectureModel, graph, javaVersion, nodeCode, projectName, prompt, springBootVersion, workspaceFiles]);
   const projectSignature = useMemo(
     () => getProjectSignature(buildProjectPayload("")),
     [buildProjectPayload]
@@ -1614,6 +1645,7 @@ export default function App() {
     setBuildDiagnostics([]);
     setWorkspaceView("canvas");
     setGitRepositoryReady(false);
+    setArchitectureModel(null);
     setActiveRecentProjectId(null);
     setCamera({ x: 120, y: 72, scale: 1 });
     setClearConfirmOpen(false);
@@ -1657,6 +1689,7 @@ export default function App() {
     setBuildDiagnostics([]);
     setWorkspaceView("canvas");
     setGitRepositoryReady(false);
+    setArchitectureModel(null);
     lastSavedSignatureRef.current = "";
     setAutoSaveStatus("idle");
   }, []);
@@ -1698,6 +1731,24 @@ export default function App() {
     setBuildDiagnostics([]);
     setWorkspaceView(restoredFiles.length > 0 ? "editor" : "canvas");
     setGitRepositoryReady(false);
+
+    const allFiles: WorkspaceFile[] = restoredFiles.length > 0
+      ? restoredFiles
+      : Object.values(parsed.nodeCode ?? {}).flat();
+    if (isArchitectureModel(parsed.model)) {
+      setArchitectureModel(parsed.model);
+    } else {
+      const { model } = migrateFromSavedProject({
+        version: parsed.version,
+        projectName: parsed.projectName,
+        graph: parsed.graph,
+        nodeCode: parsed.nodeCode,
+        workspaceFiles: allFiles,
+        javaVersion: parsed.javaVersion,
+        springBootVersion: parsed.springBootVersion,
+      });
+      setArchitectureModel(model);
+    }
   }, []);
 
   const validateProjectData = (parsed: Partial<SavedProjectFile>): parsed is SavedProjectFile => isSavedProjectFile(parsed);
@@ -2127,6 +2178,7 @@ export default function App() {
         nodeCode,
         workspaceFiles,
         dockerSettings,
+        model: derivedArchitectureModel ?? undefined,
       }, null, 2),
     }];
 
@@ -2139,7 +2191,7 @@ export default function App() {
     const dedupedFiles = Array.from(fileMap.entries()).map(([path, content]) => ({ path, content }));
 
     await zipService.download(dedupedFiles, projectName);
-  }, [buildTool, dockerSettings, javaVersion, springBootVersion, graph, nodeCode, projectName, prompt, scaffoldService, workspaceFiles, workspaceFilesImported, zipService]);
+  }, [buildTool, derivedArchitectureModel, dockerSettings, javaVersion, springBootVersion, graph, nodeCode, projectName, prompt, scaffoldService, workspaceFiles, workspaceFilesImported, zipService]);
 
   const getRunnableProjectFiles = useCallback(() => {
     const generatedFiles = (workspaceFiles.length > 0 ? workspaceFiles : Object.values(nodeCode).flat())
@@ -3004,7 +3056,10 @@ export default function App() {
       {!activeProjectStarted && (
         <div className="startup-overlay">
           <div ref={startupDialogRef} tabIndex={-1} className="startup-panel" role="dialog" aria-modal="true" aria-labelledby="startup-title">
-            <div className="startup-brand">ARCH</div>
+            <div className="startup-panel-header">
+              <div className="startup-brand">ARCHIVIZ</div>
+              {onLogout && <button type="button" className="btn startup-logout-btn" onClick={onLogout} aria-label="Log out of Archiviz">Log out</button>}
+            </div>
             <div className="startup-copy">
               <h1 id="startup-title">Choose a project</h1>
               <p>Open a saved architecture workspace, import an IDE codebase, or create a fresh Spring Boot project.</p>
@@ -3134,6 +3189,7 @@ export default function App() {
           onRedo={redoWorkspace}
           canUndo={!!workspaceHistoryRef.current?.past.length && historyVersion >= 0}
           canRedo={!!workspaceHistoryRef.current?.future.length && historyVersion >= 0}
+          onLogout={onLogout}
         />
       )}
 

@@ -319,6 +319,242 @@ The empty canvas should explain how to add components, connect them, configure t
 
 ---
 
+# Milestone 1.1: Free and Private AI
+
+## Objective
+
+Make Archiviz useful without requiring a paid AI subscription while preserving privacy, predictable behavior, and a clear path to enterprise-controlled models.
+
+## Product outcome
+
+A user can generate and refine an architecture-backed project using a local model or a genuinely zero-cost cloud provider. Archiviz never sends a request to a paid model, creates a charge, or changes the selected privacy boundary without explicit user action.
+
+This capability is an adoption feature, not the primary product being sold. Companies pay for Archiviz's architecture workflow, validation, governance, security, and team capabilities rather than bundled inference tokens.
+
+## Dependencies
+
+Milestone 1 must be complete. In particular, generation-plan review, secure credential storage, data-transmission disclosure, validation, cancellation, and recovery must already be reliable.
+
+## Product positioning
+
+Use this promise:
+
+> Archiviz includes private local AI and optional free cloud AI. No paid AI subscription is required.
+
+Do not market any external provider as permanently free. Free tiers, model availability, rate limits, data policies, and terms can change independently of Archiviz.
+
+## Provider strategy
+
+### 1. Local models as the default private option
+
+Support Ollama-compatible local inference as the preferred free provider.
+
+Required behavior:
+
+- Detect whether the configured local server is reachable.
+- Discover installed models instead of relying on a hardcoded model name.
+- Recommend models that satisfy the context-window and code-generation requirements.
+- Keep prompts, architecture data, and source files on the user's machine.
+- Work without an Archiviz account or external API key.
+- Explain that local speed and quality depend on the user's hardware and selected model.
+- Provide setup guidance when no compatible local runtime or model is available.
+
+Support other OpenAI-compatible local servers, such as LM Studio or a company-hosted gateway, through a configurable base URL.
+
+### 2. Free cloud routing for convenient onboarding
+
+Support a free-model router such as OpenRouter's free-model route as the initial cloud option.
+
+Required behavior:
+
+- Request only models explicitly reported as zero cost.
+- Re-check model price and availability before dispatch when the provider exposes that metadata.
+- Never fall back to a paid model.
+- Never add billing details or enable paid usage on the user's behalf.
+- Show that model selection may vary between requests when an automatic free router is used.
+- Treat free-provider availability as best effort with no Archiviz uptime guarantee.
+
+Do not ship a shared production API key in the desktop application. Users should authenticate with their own provider account unless Archiviz later operates a secured server-side trial gateway with abuse prevention and provider approval.
+
+### 3. User-owned free-tier provider accounts
+
+Allow adapters for providers that offer a free API tier, initially including suitable Gemini and Groq models.
+
+Each adapter must:
+
+- Use the user's own API key stored in the OS credential store.
+- Discover or validate currently available models.
+- Identify rate-limit responses and show when quota resets if the provider supplies that information.
+- Record no assumption that a model or quota will remain free.
+- Display the provider's current data-use and retention disclosure before first use.
+- Refuse the request if its price cannot be verified as zero under Free AI mode.
+
+Provider availability must be remotely configurable or updateable without requiring a full application release.
+
+## Free-only routing policy
+
+Create a provider-independent `FreeOnlyRouter` responsible for provider selection and enforcement.
+
+The router should receive:
+
+- Operation type, such as architecture proposal, code generation, repair, or chat
+- Required context size
+- Required output size
+- Streaming requirement
+- Privacy policy
+- Allowed providers
+- Whether local inference is required or preferred
+
+The router must evaluate:
+
+- Verified input and output price
+- Model availability
+- Context window
+- Code-generation capability
+- Rate-limit state
+- Provider health
+- Data-use policy
+- User or organization policy
+
+Default routing order:
+
+1. Compatible local model when Local First is enabled.
+2. User-selected free cloud provider.
+3. Another explicitly allowed and verified zero-cost provider.
+4. Stop with an actionable `No free provider available` state.
+
+The router must never silently cross from local to cloud, switch to a provider the user has not approved, or use a model with unknown or positive pricing.
+
+## User experience
+
+### AI setup
+
+Add a guided setup with these choices:
+
+- **Local and private:** Connect to Ollama or another compatible local server.
+- **Free cloud:** Connect a supported free-tier provider account.
+- **Company model:** Connect an organization-controlled OpenAI-compatible endpoint.
+- **Configure later:** Continue using non-AI design, editing, import, validation, and export features.
+
+The setup should test the connection, discover models, verify free eligibility, and run a small capability check.
+
+### Persistent provider identity
+
+Every AI action must show:
+
+- Provider and model
+- `Local / Private`, `Cloud / Free`, or `Company Managed` status
+- Which project content will be transmitted
+- Current quota or rate-limit state when available
+- Whether automatic free-model routing is active
+
+### Failure and quota states
+
+Represent these states distinctly:
+
+- Local runtime unavailable
+- No compatible local model installed
+- Free cloud quota exhausted
+- Provider rate limited
+- Free model removed or unavailable
+- Pricing could not be verified
+- Provider authentication failed
+- Request rejected by organization policy
+- All approved free providers unavailable
+
+Each failure should explain how to continue: retry later, select another free provider, start a local model, reduce request scope, or configure a company endpoint. Do not present a paid upgrade as the only recovery path.
+
+## Privacy and security requirements
+
+- Default to local inference when the user selects privacy-first operation.
+- Require confirmation before sending project content to a cloud provider for the first time.
+- Show the exact categories of data being transmitted.
+- Redact credentials, environment secrets, private keys, tokens, and configured sensitive patterns.
+- Keep provider credentials in OS-protected storage.
+- Never proxy user credentials through an Archiviz service unless that service is explicitly enabled and documented.
+- Do not log prompt bodies, source code, secrets, or full model responses by default.
+- Allow organizations to disable public providers and require local or company-managed endpoints.
+- Store the user's provider approval and privacy choice per project or organization.
+
+## Engineering requirements
+
+- Define a stable provider-adapter interface for health checks, model discovery, pricing metadata, quota metadata, streaming, cancellation, and error normalization.
+- Keep routing policy independent from provider-specific HTTP clients and UI components.
+- Add a capability registry with updateable provider and model metadata.
+- Cache metadata only for a bounded period and fail closed when free pricing cannot be verified.
+- Normalize provider errors into product-level states.
+- Support exponential backoff only when the provider indicates a retry is appropriate.
+- Respect cancellation throughout routing, streaming, and failover.
+- Record provider selection and failure reasons without recording sensitive request content.
+- Add deterministic mock providers for tests.
+- Keep all non-AI workflows operational when no provider is configured.
+
+Suggested adapter contract:
+
+```ts
+interface AIProviderAdapter {
+  id: string;
+  privacyClass: "local" | "cloud" | "company";
+  healthCheck(signal: AbortSignal): Promise<ProviderHealth>;
+  listModels(signal: AbortSignal): Promise<ModelCapability[]>;
+  getQuota(signal: AbortSignal): Promise<QuotaState | null>;
+  stream(request: AIRequest, signal: AbortSignal): AsyncIterable<AIChunk>;
+}
+```
+
+Model metadata must include a verified timestamp and explicit pricing state:
+
+```ts
+type PricingState =
+  | { kind: "free"; inputPrice: 0; outputPrice: 0; verifiedAt: string }
+  | { kind: "paid"; inputPrice: number; outputPrice: number; verifiedAt: string }
+  | { kind: "unknown"; verifiedAt?: string };
+```
+
+Only `kind: "free"` is eligible when Free AI mode is active.
+
+## Observability
+
+Measure without collecting project content:
+
+- Provider selection success rate
+- Local versus cloud usage
+- Time to first token
+- Request completion and cancellation rates
+- Rate-limit and quota failures
+- Free-model availability changes
+- Generation-plan acceptance and rejection rates by provider class
+- Build and test success after generation
+
+Analytics must be opt-in where required and must never include source code, prompts, credentials, generated files, or model responses.
+
+## Acceptance criteria
+
+- A new user can connect a local Ollama-compatible model and generate a reviewed project without a paid account.
+- A new user can connect at least one supported free cloud provider with their own credential.
+- Provider and model identity are visible before and during every AI action.
+- Cloud transmission scope is disclosed before first use.
+- Free AI mode rejects models with paid or unknown pricing.
+- Failover occurs only between providers explicitly approved by the user.
+- Local-to-cloud failover requires explicit prior approval.
+- Exhausted quotas and rate limits produce actionable product states.
+- Removing or repricing a free model does not cause a paid request.
+- Credentials never enter browser storage, project exports, logs, or prompts.
+- AI requests remain cancellable during streaming and provider failover.
+- Architecture design, manual editing, import, validation, and export work with no AI provider configured.
+- Automated tests cover routing priority, price enforcement, quota exhaustion, provider failure, cancellation, redaction, and the no-provider workflow.
+
+## Out of scope
+
+- Unlimited hosted inference funded by Archiviz
+- Guaranteed availability or output quality from free third-party providers
+- Silent fallback to paid inference
+- Bundling shared provider credentials in the desktop client
+- Training models on customer projects
+- Requiring AI for core editing, validation, import, or export workflows
+
+---
+
 # Milestone 2: Bidirectional Architecture and Code
 
 ## Objective
@@ -899,8 +1135,9 @@ Agents should not:
 ## Recommended implementation order
 
 1. Complete Milestone 1 to make the product safe and usable.
-2. Complete Milestone 2 to establish the primary product differentiation.
-3. Complete Milestone 3 to support team adoption and governance.
-4. Complete Milestone 4 to expand the market without sacrificing depth.
+2. Complete Milestone 1.1 to provide a free, private, and policy-safe AI onboarding path.
+3. Complete Milestone 2 to establish the primary product differentiation.
+4. Complete Milestone 3 to support team adoption and governance.
+5. Complete Milestone 4 to expand the market without sacrificing depth.
 
 The most important constraint is to avoid broad framework expansion before bidirectional architecture-to-code synchronization works reliably for Spring Boot.

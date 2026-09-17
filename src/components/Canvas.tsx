@@ -234,8 +234,15 @@ export default function Canvas({
       onPointerDown={is3DMode ? undefined : onCanvasPointerDown}
     >
       <div className="canvasHud" onPointerDown={(e) => e.stopPropagation()}>
-        <div className="cameraBadge">
-          {is3DMode ? "3D View" : `Zoom ${Math.round(camera.scale * 100)}%`}
+        <div className="cameraBadge" title="Canvas viewport telemetry">
+          <span style={{ color: "var(--accent)", marginRight: 6 }}>◈</span>
+          <span>{is3DMode ? "3D VIEW" : `${Math.round(camera.scale * 100)}%`}</span>
+          {!is3DMode && (
+            <>
+              <span style={{ opacity: 0.35, margin: "0 6px" }}>|</span>
+              <span style={{ color: "var(--muted)", fontSize: "10px" }}>X:{Math.round(camera.x)} Y:{Math.round(camera.y)}</span>
+            </>
+          )}
         </div>
         {isLargeGraph && (
           <div className="cameraBadge cameraBadge--compact" title="Large graph optimization is active">

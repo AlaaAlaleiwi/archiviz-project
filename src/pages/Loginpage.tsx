@@ -1,5 +1,4 @@
 import { useState } from "react";
-import "../styles.css";
 
 /* ─────────────────────────────────────────
    Tiny localStorage auth store
@@ -80,10 +79,13 @@ function signup(name: string, email: string, password: string): User {
 ───────────────────────────────────────── */
 interface Props {
   onAuth: (user: User) => void;
+  initialMode?: "login" | "signup";
+  onBack: () => void;
+  onContinueLocal: () => void;
 }
 
-export default function LoginPage({ onAuth }: Props) {
-  const [mode, setMode] = useState<"login" | "signup">("login");
+export default function LoginPage({ onAuth, initialMode = "login", onBack, onContinueLocal }: Props) {
+  const [mode, setMode] = useState<"login" | "signup">(initialMode);
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -121,10 +123,11 @@ export default function LoginPage({ onAuth }: Props) {
       </div>
 
       <div className="auth-card">
+        <button type="button" className="auth-back" onClick={onBack} aria-label="Back to Archiviz home">← Back</button>
         {/* Brand */}
         <div className="auth-brand">
-          <span className="auth-logo">⚡</span>
-          <span className="auth-brand-name">ARCH BUILDER</span>
+          <span className="auth-logo" aria-hidden="true">A</span>
+          <span className="auth-brand-name">ARCHIVIZ // ACCESS GATEWAY</span>
         </div>
 
         <h1 className="auth-title">
@@ -143,8 +146,9 @@ export default function LoginPage({ onAuth }: Props) {
           {/* Name — signup only */}
           {mode === "signup" && (
             <div className="auth-field">
-              <label className="auth-label">Full Name</label>
+              <label className="auth-label" htmlFor="auth-name">Full Name</label>
               <input
+                id="auth-name"
                 className="auth-input"
                 type="text"
                 placeholder="Jane Doe"
@@ -158,8 +162,9 @@ export default function LoginPage({ onAuth }: Props) {
 
           {/* Email */}
           <div className="auth-field">
-            <label className="auth-label">Email</label>
+            <label className="auth-label" htmlFor="auth-email">Email</label>
             <input
+              id="auth-email"
               className="auth-input"
               type="email"
               placeholder="you@example.com"
@@ -172,9 +177,10 @@ export default function LoginPage({ onAuth }: Props) {
 
           {/* Password */}
           <div className="auth-field">
-            <label className="auth-label">Password</label>
+            <label className="auth-label" htmlFor="auth-password">Password</label>
             <div style={{ position: "relative" }}>
               <input
+                id="auth-password"
                 className="auth-input"
                 type={showPw ? "text" : "password"}
                 placeholder={mode === "signup" ? "Min. 6 characters" : "••••••••"}
@@ -187,9 +193,9 @@ export default function LoginPage({ onAuth }: Props) {
                 type="button"
                 className="auth-eye"
                 onClick={() => setShowPw(v => !v)}
-                tabIndex={-1}
+                aria-label={showPw ? "Hide password" : "Show password"}
               >
-                {showPw ? "🙈" : "👁️"}
+                {showPw ? "Hide" : "Show"}
               </button>
             </div>
           </div>
@@ -207,6 +213,8 @@ export default function LoginPage({ onAuth }: Props) {
 
         {/* Divider */}
         <div className="auth-divider">or</div>
+
+        <button type="button" className="auth-local" onClick={onContinueLocal}>Continue without an account</button>
 
         {/* Switch mode */}
         <div className="auth-footer" style={{ justifyContent: "center" }}>
@@ -228,7 +236,7 @@ export default function LoginPage({ onAuth }: Props) {
           textAlign: "center",
           lineHeight: 1.5,
         }}>
-          🔒 Credentials are stored locally in your browser only.
+          Local account preview only. Cloud accounts and synchronization are not connected yet.
         </p>
       </div>
     </div>

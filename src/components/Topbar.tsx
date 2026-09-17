@@ -393,7 +393,11 @@ export default function Topbar({
 
         {/* ── LEFT: logo + File menu ─────────────────────────────── */}
         <div className="topbar-left">
-          <div className="logo">⚡ ARCH</div>
+          <div className="logo" title="Archiviz Quantum OS">⚡ ARCH</div>
+          <div className="topbar-telemetry-chip">
+            <span className="telemetry-dot" />
+            <span>SYS: OK</span>
+          </div>
           <DropdownMenu label="File" items={fileItems} />
         </div>
 
@@ -428,7 +432,7 @@ export default function Topbar({
             ⚙
           </button>
 
-          {onLogout && <button className="btn" onClick={onLogout}>Logout</button>}
+          {onLogout && <button className="btn topbar-logout-btn" onClick={onLogout} aria-label="Log out of Archiviz">Log out</button>}
         </div>
       </div>
 

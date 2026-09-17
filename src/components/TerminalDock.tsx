@@ -6,6 +6,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import "../styles.css";
 import type { TerminalSettings } from "./Settings";
+import { isTauriRuntime } from "../utils/tauriRuntime";
 
 type TerminalTab = {
   id: string;
@@ -203,6 +204,7 @@ export default function TerminalDock({ terminalSettings, getWorkspaceCwd }: Term
   }, [activeId, fitTerminal, isOpen, openTerminalDom]);
 
   useEffect(() => {
+    if (!isTauriRuntime()) return;
     const unlisteners: UnlistenFn[] = [];
 
     void listen<TerminalDataPayload>("terminal-data", (event) => {
