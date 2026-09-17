@@ -20,8 +20,6 @@ const ROLE_COLORS = [
   "#94a3b8",
 ];
 
-const BASE_NODE_SIZE = 48;
-
 function hashString(value: string) {
   let hash = 0;
   for (let index = 0; index < value.length; index += 1) {

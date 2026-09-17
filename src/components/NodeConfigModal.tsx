@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import type { NodeData } from "../types";
 import { getComponentConfig, type ConfigField } from "../utils/componentConfigs";
 import "../styles.css";
+import { useDialogFocus } from "../useDialogFocus";
 
 interface Props {
   node: NodeData;
@@ -60,6 +61,7 @@ function Toggle({ value, onChange }: { value: boolean; onChange: (v: boolean) =>
 }
 
 export default function NodeConfigModal({ node, onSave, onClose }: Props) {
+  const dialogRef = useDialogFocus<HTMLDivElement>(onClose);
   const schema = getComponentConfig(node.type);
   if (!schema) return null;
 
@@ -83,14 +85,14 @@ export default function NodeConfigModal({ node, onSave, onClose }: Props) {
 
   const modal = (
     <div className="modal" onClick={onClose}>
-      <div className="ncm-panel" onClick={e => e.stopPropagation()}>
+      <div ref={dialogRef} tabIndex={-1} className="ncm-panel" role="dialog" aria-modal="true" aria-label={`Configure ${node.name}`} onClick={e => e.stopPropagation()}>
 
         <div className="ncm-header">
           <div>
             <div className="ncm-title">Configure · {node.name}</div>
             <div className="ncm-subtitle">{node.type}</div>
           </div>
-          <button className="np-close" onClick={onClose}>✕</button>
+          <button className="np-close" onClick={onClose} aria-label="Close configuration">✕</button>
         </div>
 
         <div className="ncm-body">

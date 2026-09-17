@@ -329,22 +329,22 @@ dependencies {
     implementation("org.flywaydb:flyway-core")
     implementation("org.flywaydb:flyway-database-postgresql")
     // OpenAPI
-    implementation("org.springdoc:springdoc-openapi-starter-webmvc-ui:\$springdocVersion")
+    implementation("org.springdoc:springdoc-openapi-starter-webmvc-ui:$springdocVersion")
     // JWT
-    implementation("io.jsonwebtoken:jjwt-api:\$jjwtVersion")
-    runtimeOnly("io.jsonwebtoken:jjwt-impl:\$jjwtVersion")
-    runtimeOnly("io.jsonwebtoken:jjwt-jackson:\$jjwtVersion")
+    implementation("io.jsonwebtoken:jjwt-api:$jjwtVersion")
+    runtimeOnly("io.jsonwebtoken:jjwt-impl:$jjwtVersion")
+    runtimeOnly("io.jsonwebtoken:jjwt-jackson:$jjwtVersion")
     // Lombok
     compileOnly("org.projectlombok:lombok")
     annotationProcessor("org.projectlombok:lombok")
     // MapStruct
-    implementation("org.mapstruct:mapstruct:\$mapstructVersion")
-    annotationProcessor("org.mapstruct:mapstruct-processor:\$mapstructVersion")
+    implementation("org.mapstruct:mapstruct:$mapstructVersion")
+    annotationProcessor("org.mapstruct:mapstruct-processor:$mapstructVersion")
     // Testing
     testImplementation("org.springframework.boot:spring-boot-starter-test")
     testImplementation("org.springframework.security:spring-security-test")
-    testImplementation("org.testcontainers:junit-jupiter:\$testcontainersVersion")
-    testImplementation("org.testcontainers:postgresql:\$testcontainersVersion")
+    testImplementation("org.testcontainers:junit-jupiter:$testcontainersVersion")
+    testImplementation("org.testcontainers:postgresql:$testcontainersVersion")
     testImplementation("io.rest-assured:rest-assured")
     testCompileOnly("org.projectlombok:lombok")
     testAnnotationProcessor("org.projectlombok:lombok")

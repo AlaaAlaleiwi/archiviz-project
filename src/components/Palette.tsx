@@ -102,6 +102,7 @@ type PaletteProps = {
   embedded?: boolean;
   workspaceFiles?: WorkspaceFile[];
   onDropNode?: (type: string, clientX: number, clientY: number, name?: string) => boolean;
+  onAddNode?: (type: string, name?: string) => void;
 };
 
 type PaletteDragState = {
@@ -115,7 +116,7 @@ type PaletteDragState = {
   active: boolean;
 };
 
-export default function Palette({ embedded = false, workspaceFiles = [], onDropNode }: PaletteProps) {
+export default function Palette({ embedded = false, workspaceFiles = [], onDropNode, onAddNode }: PaletteProps) {
   const [isOpen, setIsOpen] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
   const [activeTab, setActiveTab] = useState<PaletteTab>("all");
@@ -207,7 +208,7 @@ export default function Palette({ embedded = false, workspaceFiles = [], onDropN
     };
   }, [dragState?.pointerId, onDropNode]);
 
-  const startNodeDrag = (event: ReactPointerEvent<HTMLDivElement>, item: Item) => {
+  const startNodeDrag = (event: ReactPointerEvent<HTMLElement>, item: Item) => {
     if (event.button !== 0) return;
 
     event.preventDefault();
@@ -224,7 +225,7 @@ export default function Palette({ embedded = false, workspaceFiles = [], onDropN
     });
   };
 
-  const startImportedFileDrag = (event: ReactPointerEvent<HTMLDivElement>, fileItem: ImportedFileItem) => {
+  const startImportedFileDrag = (event: ReactPointerEvent<HTMLElement>, fileItem: ImportedFileItem) => {
     if (event.button !== 0) return;
     event.preventDefault();
     event.stopPropagation();
@@ -337,10 +338,13 @@ export default function Palette({ embedded = false, workspaceFiles = [], onDropN
                   const matchedFiles = filesForType(item.type, workspaceFiles);
                   const isImplemented = matchedFiles.length > 0;
                   return (
-                    <div
+                    <button
+                      type="button"
                       key={item.type}
                       onPointerDown={(event) => startNodeDrag(event, item)}
+                      onClick={() => onAddNode?.(item.type, item.label)}
                       className={`paletteItem${isImplemented ? " paletteItem--implemented" : ""}`}
+                      aria-label={`Add ${item.label} to the design`}
                     >
                       <div className="paletteIcon">{item.icon}</div>
                       <div className="paletteText">
@@ -355,7 +359,7 @@ export default function Palette({ embedded = false, workspaceFiles = [], onDropN
                         <div className="paletteSub">{item.desc}</div>
                       </div>
                       <div className="paletteHint">{isImplemented ? "✓" : "↗"}</div>
-                    </div>
+                    </button>
                   );
                 })
               ) : (
@@ -373,10 +377,12 @@ export default function Palette({ embedded = false, workspaceFiles = [], onDropN
                   <div key={role} className="paletteProjectGroup">
                     <div className="paletteSectionTitle">{role}s</div>
                     {items.map((fileItem) => (
-                      <div
+                      <button
+                        type="button"
                         key={fileItem.path}
                         className="paletteItem paletteItem--file"
                         onPointerDown={(e) => startImportedFileDrag(e, fileItem)}
+                        onClick={() => onAddNode?.(fileItem.nodeType, fileItem.displayName)}
                         title={fileItem.path}
                       >
                         <div className="paletteIcon">{fileItem.icon}</div>
@@ -385,7 +391,7 @@ export default function Palette({ embedded = false, workspaceFiles = [], onDropN
                           <div className="paletteSub">{fileItem.path.split("/").slice(-2).join("/")}</div>
                         </div>
                         <div className="paletteHint">↗</div>
-                      </div>
+                      </button>
                     ))}
                   </div>
                 ))

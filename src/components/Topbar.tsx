@@ -1,6 +1,7 @@
 import "../styles.css";
 import { useState, useRef, useEffect } from "react";
 import type { JavaVersion, SpringBootVersion, BuildTool, Language } from "../types";
+import { useDialogFocus } from "../useDialogFocus";
 
 const JAVA_VERSIONS: JavaVersion[]         = ["17", "21", "25"];
 const SPRING_VERSIONS: SpringBootVersion[] = ["3.2", "3.3", "3.4"];
@@ -88,9 +89,10 @@ function UnsavedChangesModal({
   onDiscardAndContinue: () => void;
   onCancel: () => void;
 }) {
+  const dialogRef = useDialogFocus<HTMLDivElement>(onCancel);
   return (
     <div className="modal" onClick={onCancel}>
-      <div className="np-modal unsaved-modal" onClick={e => e.stopPropagation()}>
+      <div ref={dialogRef} tabIndex={-1} className="np-modal unsaved-modal" role="dialog" aria-modal="true" aria-label="Unsaved changes" onClick={e => e.stopPropagation()}>
         <div className="unsaved-icon">⚠️</div>
         <div className="np-header" style={{ flexDirection: "column", alignItems: "flex-start", gap: 6 }}>
           <span className="np-title">Unsaved changes</span>
@@ -126,6 +128,7 @@ export function ProjectConfigModal({
   onClose: () => void;
 }) {
   const [cfg, setCfg] = useState<JavaProjectConfig>(initial);
+  const dialogRef = useDialogFocus<HTMLDivElement>(onClose);
   const update = (patch: Partial<JavaProjectConfig>) => setCfg(prev => ({ ...prev, ...patch }));
 
   const handleConfirm = () => {
@@ -136,10 +139,10 @@ export function ProjectConfigModal({
 
   return (
     <div className="modal" onClick={onClose}>
-      <div className="np-modal" onClick={e => e.stopPropagation()}>
+      <div ref={dialogRef} tabIndex={-1} className="np-modal" role="dialog" aria-modal="true" aria-label={title} onClick={e => e.stopPropagation()}>
         <div className="np-header">
           <span className="np-title">{title}</span>
-          <button className="np-close" onClick={onClose}>✕</button>
+          <button className="np-close" onClick={onClose} aria-label={`Close ${title}`}>✕</button>
         </div>
 
         <div className="np-field">
@@ -196,13 +199,101 @@ export function ProjectConfigModal({
   );
 }
 
+type AutoSaveState = "idle" | "unsaved" | "saving" | "saved" | "error" | "local";
+
+export interface AutosaveDetails {
+  lastSavedAt: string | null;
+  destination: string;
+  error: string | null;
+  canRestore: boolean;
+}
+
+function AutosaveChip({
+  state,
+  details,
+  active,
+  onToggle,
+  onRetry,
+  onRestore,
+}: {
+  state: AutoSaveState;
+  details: AutosaveDetails;
+  active: boolean;
+  onToggle: () => void;
+  onRetry: () => void;
+  onRestore: () => void;
+}) {
+  const icon = state === "saving" ? "⋯" : state === "error" ? "⚠" : state === "unsaved" ? "●" : state === "local" ? "⌂" : "✓";
+  const colorClass =
+    state === "saving" ? "autosave-chip--saving"
+    : state === "error" ? "autosave-chip--error"
+    : state === "unsaved" ? "autosave-chip--saving"
+    : state === "local" ? "autosave-chip--local"
+    : "autosave-chip--saved";
+  const statusLabel = state === "saving" ? "Saving…"
+    : state === "error" ? "Save failed — Retry"
+    : state === "unsaved" ? "Unsaved changes"
+    : state === "local" ? "Local-only"
+    : details.lastSavedAt ? `Saved ${new Date(details.lastSavedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
+    : "Save ready";
+
+  return (
+    <div className="autosave-chip-wrapper">
+      <button
+        type="button"
+        className={`autosave-chip ${colorClass}`}
+        aria-expanded={active}
+        onClick={onToggle}
+      >
+        <span className="autosave-chip-icon">{icon}</span>
+        <span className="topbar-autosave">{statusLabel}</span>
+        <span className="autosave-chip-caret">▾</span>
+      </button>
+
+      {active && (
+        <div className="autosave-details-dropdown">
+          <div className="autosave-details-row">
+            <span className="autosave-details-label">Destination</span>
+            <span className="autosave-details-value">{details.destination}</span>
+          </div>
+          {details.lastSavedAt && (
+            <div className="autosave-details-row">
+              <span className="autosave-details-label">Last saved</span>
+              <span className="autosave-details-value">{new Date(details.lastSavedAt).toLocaleString()}</span>
+            </div>
+          )}
+          {details.error && (
+            <div className="autosave-details-row">
+              <span className="autosave-details-label">Error</span>
+              <span className="autosave-details-value autosave-details-value--error">{details.error}</span>
+            </div>
+          )}
+          <div className="autosave-details-actions">
+            {state === "error" && (
+              <button type="button" className="btn btn-sm" onClick={onRetry}>Retry</button>
+            )}
+            {details.canRestore && (
+              <button type="button" className="btn btn-sm btn-primary" onClick={onRestore}>Restore</button>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ──────────────────────────────────────────────────────────────────────────
    TOPBAR
-────────────────────────────────────────────────────────────────────────── */
+───────────────────────────────────────────────────────────────────────── */
 interface TopbarProps {
   canSaveProject: boolean;
   hasUnsavedChanges?: boolean;
-  autoSaveLabel?: string;
+  autosaveState?: AutoSaveState;
+  autosaveDetails?: AutosaveDetails;
+  autosaveDetailsActive?: boolean;
+  onToggleAutosaveDetails?: () => void;
+  onRetryAutosave?: () => void;
+  onRestoreAutosave?: () => void;
   importingProject?: boolean;
   javaVersion: JavaVersion;
   setJavaVersion: (v: JavaVersion) => void;
@@ -224,21 +315,31 @@ interface TopbarProps {
   onAddServiceProject?: () => void;
   onSaveProject: () => void;
   onExportProject: () => void;
+  onUndo?: () => void;
+  onRedo?: () => void;
+  canUndo?: boolean;
+  canRedo?: boolean;
   onLogout?: () => void;
 }
 
 export default function Topbar({
   canSaveProject,
-  hasUnsavedChanges, autoSaveLabel, importingProject,
+  hasUnsavedChanges, importingProject,
+  autosaveState = "idle",
+  autosaveDetails,
+  autosaveDetailsActive = false,
+  onToggleAutosaveDetails,
+  onRetryAutosave,
+  onRestoreAutosave,
   javaVersion, setJavaVersion,
   springBootVersion, setSpringBootVersion,
-  detectedLanguage = "java", detectedFramework,
   workspaceName, setWorkspaceName,
   projectName, setProjectName,
   buildTool, setBuildTool,
   onOpenSettings,
   onCreateProject, onOpenProject, onImportProject, onOpenProjectInNewWindow, onAddServiceProject,
   onSaveProject, onExportProject,
+  onUndo, onRedo, canUndo = false, canRedo = false,
   onLogout,
 }: TopbarProps) {
   type Step = "idle" | "unsaved" | "newProject" | "editProject";
@@ -309,9 +410,21 @@ export default function Topbar({
           </div>
         </div>
 
-        {/* ── RIGHT: settings + logout ───────────────────────────── */}
-        <div className="topbar-right">
-          <button className="btn topbar-icon-btn" onClick={onOpenSettings} title="Settings" aria-label="Settings">
+          {/* ── RIGHT: autosave chip + settings + logout ─────────────────────── */}
+          <div className="topbar-right">
+            <button className="btn topbar-history-btn" onClick={onUndo} disabled={!canUndo} title="Undo (Ctrl/Cmd+Z)" aria-label="Undo last workspace change">↶</button>
+            <button className="btn topbar-history-btn" onClick={onRedo} disabled={!canRedo} title="Redo (Ctrl/Cmd+Shift+Z)" aria-label="Redo last workspace change">↷</button>
+            {autosaveState !== "idle" && onToggleAutosaveDetails && autosaveDetails && (
+              <AutosaveChip
+                state={autosaveState}
+                details={autosaveDetails}
+                active={autosaveDetailsActive}
+                onToggle={onToggleAutosaveDetails}
+                onRetry={onRetryAutosave ?? (() => {})}
+                onRestore={onRestoreAutosave ?? (() => {})}
+              />
+            )}
+            <button className="btn topbar-icon-btn" onClick={onOpenSettings} title="Settings" aria-label="Settings">
             ⚙
           </button>
 

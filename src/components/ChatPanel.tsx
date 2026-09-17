@@ -58,7 +58,9 @@ function readSessions(): SavedSession[] {
 }
 
 function writeSessions(sessions: SavedSession[]) {
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(sessions)); } catch {}
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(sessions)); } catch {
+    // ignore
+  }
 }
 
 function sessionTitle(history: ChatMessage[]): string {
@@ -405,7 +407,7 @@ export default function ChatPanel({ ai, minimized, onMinimize, onMaximize, onClo
           )}
         </div>
       ) : (
-        <div className="chat-messages">
+        <div className="chat-messages" aria-live="polite" aria-label="AI conversation">
           {uiMessages.map(msg => (
             <div key={msg.id} className={`chat-bubble-row ${msg.role}`}>
               {msg.role === "assistant" && <div className="chat-avatar">A</div>}

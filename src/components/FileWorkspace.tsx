@@ -1,4 +1,4 @@
-import Editor from "@monaco-editor/react";
+import CodeEditor, { type CodeDiffLines, type CodeEditorHandle } from "./CodeEditor";
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import type { EditorSettings } from "./Settings";
 import "../styles.css";
@@ -39,9 +39,13 @@ type FileWorkspaceProps = {
   showGitFolder?: boolean;
   onBuildProject?: () => void;
   onRunProject?: () => void;
+  onRunTests?: () => void;
   runnerBusy?: boolean;
   errorPaths?: string[];
   errorDiagnostics?: WorkspaceDiagnostic[];
+  gitStatuses?: Record<string, string>;
+  gitDiffMarks?: Record<string, CodeDiffLines>;
+  onLocateInGraph?: (path: string) => boolean;
   fileGroups?: WorkspaceFileGroup[];
   activeGroupId?: string;
   onActiveGroupChange?: (id: string) => void;
@@ -97,6 +101,15 @@ function getFileExtension(path: string) {
 function getFolderName(path: string) {
   const parts = path.split("/");
   return parts.length > 1 ? parts.slice(0, -1).join("/") : "/";
+}
+
+function gitStatusBadge(code: string): { label: string; cls: string } {
+  if (code.includes("M")) return { label: "M", cls: "modified" };
+  if (code.includes("A")) return { label: "A", cls: "added" };
+  if (code.includes("D")) return { label: "D", cls: "deleted" };
+  if (code.includes("R")) return { label: "R", cls: "renamed" };
+  if (code.includes("?")) return { label: "U", cls: "untracked" };
+  return { label: code || "~", cls: "modified" };
 }
 
 function getParentFolders(path: string) {
@@ -249,6 +262,7 @@ function FileTree({
   onToggleFolder,
   onContextMenu,
   errorPaths,
+  gitStatuses,
   filter = "",
 }: {
   node: FileTreeNode;
@@ -259,6 +273,7 @@ function FileTree({
   onToggleFolder: (path: string) => void;
   onContextMenu: (event: MouseEvent, basePath: string, label: string) => void;
   errorPaths: Set<string>;
+  gitStatuses?: Record<string, string>;
   filter?: string;
 }) {
   const children = sortTreeNodes(Array.from(node.children.values()));
@@ -292,6 +307,10 @@ function FileTree({
                 {isFile ? <span>{getFileExtension(child.path)}</span> : null}
               </span>
               <span className="file-tree-label">{child.name}</span>
+              {isFile && gitStatuses?.[child.path] && (() => {
+                const badge = gitStatusBadge(gitStatuses[child.path]);
+                return <span className={`file-tree-status-badge file-tree-status-badge--${badge.cls}`}>{badge.label}</span>;
+              })()}
               {!isFile && <span className="file-tree-count">{isGitFolderPath(child.path) ? "repo" : countFiles(child)}</span>}
             </button>
             {!isFile && !isCollapsed && (
@@ -304,6 +323,7 @@ function FileTree({
                 onToggleFolder={onToggleFolder}
                 onContextMenu={onContextMenu}
                 errorPaths={errorPaths}
+                gitStatuses={gitStatuses}
                 filter={filter}
               />
             )}
@@ -325,23 +345,27 @@ export default function FileWorkspace({
   showGitFolder = false,
   onBuildProject,
   onRunProject,
+  onRunTests,
   runnerBusy = false,
   errorPaths = [],
   errorDiagnostics = [],
+  gitStatuses,
+  gitDiffMarks,
+  onLocateInGraph,
   fileGroups = [],
   activeGroupId = "all",
   onActiveGroupChange,
 }: FileWorkspaceProps) {
   const [openPaths, setOpenPaths] = useState<string[]>([]);
   const [fileSearch, setFileSearch] = useState("");
+  const [searchMode, setSearchMode] = useState<"path" | "content">("path");
   const [copiedPath, setCopiedPath] = useState(false);
   const [collapsedPaths, setCollapsedPaths] = useState<Set<string>>(() => new Set());
   const [newEntryMode, setNewEntryMode] = useState<"file" | "folder" | null>(null);
   const [newEntryPath, setNewEntryPath] = useState("");
   const [newEntryError, setNewEntryError] = useState("");
   const [contextMenu, setContextMenu] = useState<FileContextMenu>(null);
-  const editorRef = useRef<any>(null);
-  const monacoRef = useRef<any>(null);
+  const editorRef = useRef<CodeEditorHandle | null>(null);
   const pendingNavigationRef = useRef<NavigationTarget | null>(null);
   const activeFileRef = useRef<WorkspaceFile | null>(null);
   const visibleFilesRef = useRef<WorkspaceFile[]>([]);
@@ -377,10 +401,31 @@ export default function FileWorkspace({
     () => activeFile ? errorDiagnostics.filter(diagnostic => diagnostic.path === activeFile.path) : [],
     [activeFile, errorDiagnostics]
   );
+  const activeFileDiff = activeFile ? gitDiffMarks?.[activeFile.path] ?? null : null;
+  const activeDiffStat = activeFileDiff
+    ? { added: activeFileDiff.added.length, removed: activeFileDiff.removed.length }
+    : null;
   const filteredFileCount = useMemo(() => {
     const query = fileSearch.trim().toLowerCase();
     return query ? visibleFiles.filter(file => file.path.toLowerCase().includes(query)).length : visibleFiles.length;
   }, [fileSearch, visibleFiles]);
+  const contentResults = useMemo(() => {
+    const query = fileSearch.trim().toLowerCase();
+    if (searchMode !== "content" || query.length < 2) return [];
+    const results: { path: string; line: number; text: string }[] = [];
+    for (const file of visibleFiles) {
+      const lines = file.content.split(/\r?\n/);
+      let hitsInFile = 0;
+      for (let index = 0; index < lines.length; index += 1) {
+        if (!lines[index].toLowerCase().includes(query)) continue;
+        results.push({ path: file.path, line: index + 1, text: lines[index].trim().slice(0, 160) });
+        hitsInFile += 1;
+        if (results.length >= 200) return results;
+        if (hitsInFile >= 20) break;
+      }
+    }
+    return results;
+  }, [fileSearch, searchMode, visibleFiles]);
 
   useEffect(() => {
     activeFileRef.current = activeFile;
@@ -389,11 +434,7 @@ export default function FileWorkspace({
 
   const revealEditorPosition = useCallback((target: NavigationTarget) => {
     window.setTimeout(() => {
-      const editor = editorRef.current;
-      if (!editor) return;
-      editor.setPosition({ lineNumber: target.lineNumber, column: target.column });
-      editor.revealLineInCenter(target.lineNumber);
-      editor.focus();
+      editorRef.current?.revealPosition({ lineNumber: target.lineNumber, column: target.column });
     }, 0);
   }, []);
 
@@ -426,54 +467,10 @@ export default function FileWorkspace({
     return null;
   }, []);
 
-  const handleEditorMount = useCallback((editor: any, monaco: any) => {
-    editorRef.current = editor;
-    monacoRef.current = monaco;
-
-    editor.onMouseDown((event: any) => {
-      const browserEvent = event.event.browserEvent as globalThis.MouseEvent | undefined;
-      const position = event.target.position;
-      const model = editor.getModel();
-
-      if (!browserEvent || !position || !model) return;
-      if (browserEvent.button !== 0 || (!browserEvent.ctrlKey && !browserEvent.metaKey)) return;
-
-      const word = model.getWordAtPosition(position);
-      if (!word?.word) return;
-
-      const target = findNavigationTarget(word.word);
-      if (!target) return;
-
-      browserEvent.preventDefault();
-      browserEvent.stopPropagation();
-      openNavigationTarget(target);
-    });
+  const handleCtrlClickWord = useCallback((word: string) => {
+    const target = findNavigationTarget(word);
+    if (target) openNavigationTarget(target);
   }, [findNavigationTarget, openNavigationTarget]);
-
-  useEffect(() => {
-    const monaco = monacoRef.current;
-    const editor = editorRef.current;
-    const model = editor?.getModel?.();
-    if (!monaco || !model) return;
-
-    const lineCount = model.getLineCount();
-    const markers = activeFileDiagnostics.map(diagnostic => {
-      const lineNumber = Math.min(Math.max(diagnostic.lineNumber || 1, 1), lineCount);
-      const maxColumn = model.getLineMaxColumn(lineNumber);
-      const startColumn = Math.min(Math.max(diagnostic.column || 1, 1), Math.max(maxColumn - 1, 1));
-
-      return {
-        severity: monaco.MarkerSeverity.Error,
-        message: diagnostic.message || "Build error",
-        startLineNumber: lineNumber,
-        startColumn,
-        endLineNumber: lineNumber,
-        endColumn: maxColumn,
-      };
-    });
-
-    monaco.editor.setModelMarkers(model, "archiviz-build", markers);
-  }, [activeFile?.path, activeFileDiagnostics]);
 
   const selectFile = (path: string) => {
     onActivePathChange(path);
@@ -715,10 +712,47 @@ export default function FileWorkspace({
           className="input file-search-input"
           value={fileSearch}
           onChange={(e) => setFileSearch(e.target.value)}
-          placeholder="Find files by path"
+          placeholder={searchMode === "content" ? "Search code across files" : "Find files by path"}
         />
+        <div className="search-mode-row" role="tablist" aria-label="Search mode">
+          <button
+            type="button"
+            className={searchMode === "path" ? "active" : ""}
+            onClick={() => setSearchMode("path")}
+          >
+            Path
+          </button>
+          <button
+            type="button"
+            className={searchMode === "content" ? "active" : ""}
+            onClick={() => setSearchMode("content")}
+            title="Search file contents (Ctrl+Shift+F)"
+          >
+            Code
+          </button>
+        </div>
         <div className="file-tree-scroll" onContextMenu={(event) => openContextMenu(event)}>
-          {treeFiles.length > 0 ? (
+          {searchMode === "content" && fileSearch.trim().length >= 2 ? (
+            contentResults.length > 0 ? (
+              <div className="content-search-results">
+                {contentResults.map(result => (
+                  <button
+                    key={`${result.path}:${result.line}`}
+                    className="content-search-hit"
+                    onClick={() => openNavigationTarget({ path: result.path, lineNumber: result.line, column: 1 })}
+                    title={result.path}
+                  >
+                    <span className="content-search-hit-path">
+                      {getFolderName(result.path) ? `${getFolderName(result.path)}/` : ""}{basename(result.path)}:{result.line}
+                    </span>
+                    <code className="content-search-hit-text">{result.text}</code>
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <div className="workspace-empty">No code matches.</div>
+            )
+          ) : treeFiles.length > 0 ? (
             hasTreeMatches ? (
               <>
                 {projectName && (
@@ -735,6 +769,7 @@ export default function FileWorkspace({
                   onToggleFolder={toggleFolder}
                   onContextMenu={openContextMenu}
                   errorPaths={errorPathSet}
+                  gitStatuses={gitStatuses}
                   filter={fileSearch}
                 />
               </>
@@ -775,15 +810,36 @@ export default function FileWorkspace({
               </div>
               <div className="workspace-file-actions">
                 <span className="workspace-file-meta">{getLanguageLabel(activeFile.path)} · {activeFileLines} lines</span>
+                {activeDiffStat && activeDiffStat.added + activeDiffStat.removed > 0 && (
+                  <span className="file-diff-stat">
+                    <span className="file-diff-stat__added">+{activeDiffStat.added}</span>
+                    {" "}
+                    <span className="file-diff-stat__removed">−{activeDiffStat.removed}</span>
+                  </span>
+                )}
                 <button className="file-action-btn" onClick={onBuildProject} disabled={!onBuildProject || runnerBusy}>
                   {runnerBusy ? "Starting..." : "Build"}
                 </button>
+                {onRunTests && (
+                  <button className="file-action-btn" onClick={onRunTests} disabled={runnerBusy} title="Run tests and jump to failed frames">
+                    {runnerBusy ? "Testing..." : "Test"}
+                  </button>
+                )}
                 <button className="file-action-btn file-action-btn--run" onClick={onRunProject} disabled={!onRunProject || runnerBusy}>
                   Run
                 </button>
                 <button className="file-action-btn" onClick={copyActiveFilePath}>
                   {copiedPath ? "Copied" : "Path"}
                 </button>
+                {onLocateInGraph && (
+                  <button
+                    className="file-action-btn"
+                    onClick={() => activeFile && onLocateInGraph(activeFile.path)}
+                    title="Select the matching node on the architecture canvas"
+                  >
+                    Graph
+                  </button>
+                )}
               </div>
             </div>
             <div className="editor-tabs" role="tablist" aria-label="Open files">
@@ -814,31 +870,68 @@ export default function FileWorkspace({
               ))}
             </div>
             <div className="workspace-file-path">{activeFile.path}</div>
+            {errorDiagnostics.length > 0 && (
+              <div className="workspace-problems">
+                <span className="workspace-problems-title">Problems ({errorDiagnostics.length})</span>
+                <div className="workspace-problems-list">
+                  {errorDiagnostics.slice(0, 12).map((diagnostic, index) => (
+                    <button
+                      key={`${diagnostic.path}:${diagnostic.lineNumber ?? 0}:${diagnostic.column ?? 0}:${diagnostic.message ?? index}`}
+                      className="workspace-problem-hit"
+                      onClick={() => openNavigationTarget({
+                        path: diagnostic.path,
+                        lineNumber: diagnostic.lineNumber ?? 1,
+                        column: diagnostic.column ?? 1,
+                      })}
+                      title={diagnostic.message ?? "Build error"}
+                    >
+                      <span className="workspace-problem-path">
+                        {basename(diagnostic.path)}{diagnostic.lineNumber ? `:${diagnostic.lineNumber}` : ""}
+                      </span>
+                      <span className="workspace-problem-message">{diagnostic.message ?? "Build error"}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
             <div className="workspace-code-editor">
-              <Editor
+              <CodeEditor
+                ref={editorRef}
                 path={activeFile.path}
                 value={activeFile.content}
                 language={getLanguage(activeFile.path)}
-                theme={editorTheme === "dark" ? "vs-dark" : "light"}
-                onMount={handleEditorMount}
-                onChange={(value) => updateActiveFile(value ?? "")}
-                options={{
-                  automaticLayout: true,
-                  fontFamily: editorSettings.fontFamily,
-                  fontSize: editorSettings.fontSize,
-                  lineHeight: editorSettings.lineHeight,
-                  minimap: { enabled: editorSettings.minimap },
-                  scrollBeyondLastLine: false,
-                  tabSize: editorSettings.tabSize,
-                  wordWrap: editorSettings.wordWrap,
-                  lineNumbers: editorSettings.lineNumbers,
-                  renderWhitespace: editorSettings.renderWhitespace,
-                  formatOnPaste: editorSettings.formatOnPaste,
-                  formatOnType: editorSettings.formatOnType,
-                  smoothScrolling: editorSettings.smoothScrolling,
-                  cursorStyle: editorSettings.cursorStyle,
-                }}
+                dark={editorTheme === "dark"}
+                fontSize={editorSettings.fontSize}
+                tabSize={editorSettings.tabSize}
+                wordWrap={editorSettings.wordWrap === "on"}
+                lineNumbers={editorSettings.lineNumbers !== "off"}
+                diagnostics={activeFileDiagnostics}
+                diffLines={activeFileDiff ?? { added: [], removed: [] }}
+                onChange={(value) => updateActiveFile(value)}
+                onCtrlClickWord={handleCtrlClickWord}
               />
+              {process.env.NODE_ENV === "development" && (
+                <pre
+                  style={{
+                    position: "fixed",
+                    right: 0,
+                    top: 0,
+                    width: 480,
+                    maxHeight: "50vh",
+                    overflow: "auto",
+                    background: "#0b1220",
+                    color: "#cbd5e1",
+                    fontSize: 11,
+                    padding: 8,
+                    zIndex: 99999,
+                    whiteSpace: "pre-wrap",
+                    wordBreak: "break-word",
+                  }}
+                  onClick={e => (e.target as HTMLElement).focus?.()}
+                >
+                  [DEBUG] path: {activeFile?.path ?? "(none)"}\nlen: {activeFile?.content.length ?? 0}\ncontent:\n{activeFile?.content ?? "(empty)"}
+                </pre>
+              )}
             </div>
           </>
         ) : (

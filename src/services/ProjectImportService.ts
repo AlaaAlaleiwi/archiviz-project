@@ -1,5 +1,5 @@
 import type { BuildTool, Edge, Graph, JavaVersion, Language, NodeData, NodeType, SpringBootVersion } from "../types";
-import { analyzeSourceFile, isSourceFile } from "../utils/fileAnalysis";
+import { isSourceFile } from "../utils/fileAnalysis";
 
 type ProjectFile = {
   path: string;
@@ -267,10 +267,6 @@ function createProjectFilesMap(files: ProjectFile[]) {
 function getJavaClassName(file: ProjectFile) {
   const declared = file.content.match(/\b(?:class|interface|record|enum)\s+([A-Z][A-Za-z0-9_]*)/)?.[1];
   return declared || getFileName(file.relativePath).replace(/\.java$/i, "");
-}
-
-function getJavaPackage(file: ProjectFile) {
-  return file.content.match(/^\s*package\s+([a-zA-Z0-9_.]+)\s*;/m)?.[1] ?? "";
 }
 
 function isJavaSourceClass(file: ProjectFile): boolean {

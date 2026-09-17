@@ -15,6 +15,8 @@ interface Props {
   onRename: (id: string, name: string) => void;
   onConfigure: (id: string) => void;
   onViewCode: (id: string) => void;
+  onKeyboardMove: (id: string, dx: number, dy: number) => void;
+  onKeyboardPort: (id: string, side: "top" | "right" | "bottom" | "left") => void;
   onExpandClasses?: (id: string) => void;
   onStartWire: (
     id: string,
@@ -101,6 +103,8 @@ export default function Node({
   onRename,
   onConfigure,
   onViewCode,
+  onKeyboardMove,
+  onKeyboardPort,
   onExpandClasses,
   onStartWire,
 }: Props) {
@@ -139,6 +143,23 @@ export default function Node({
         if (dx * dx + dy * dy > 16) return;
         e.stopPropagation();
         onViewCode(node.id);
+      }}
+      role="button"
+      tabIndex={0}
+      aria-label={`${node.name}, ${node.type} architecture component`}
+      onKeyDown={(event) => {
+        if (editing) return;
+        const step = event.shiftKey ? 20 : 5;
+        if (event.key === "ArrowLeft") { event.preventDefault(); onKeyboardMove(node.id, -step, 0); }
+        if (event.key === "ArrowRight") { event.preventDefault(); onKeyboardMove(node.id, step, 0); }
+        if (event.key === "ArrowUp") { event.preventDefault(); onKeyboardMove(node.id, 0, -step); }
+        if (event.key === "ArrowDown") { event.preventDefault(); onKeyboardMove(node.id, 0, step); }
+        if (event.key === "Delete" || event.key === "Backspace") { event.preventDefault(); onDelete(node.id); }
+        if (event.key === "F2") { event.preventDefault(); setEditing(true); }
+        if (event.key === "Enter") {
+          event.preventDefault();
+          if (hasCode) onViewCode(node.id); else onConfigure(node.id);
+        }
       }}
     >
       {/* ── header ── */}
@@ -221,12 +242,15 @@ export default function Node({
 
       {/* ── ports ── */}
       {(["top", "right", "bottom", "left"] as const).map(side => (
-        <div
+        <button
+          type="button"
           key={side}
           className={`port ${side}`}
           data-node-id={node.id}
           data-port-side={side}
           onPointerDown={(e) => handlePortDown(e, side)}
+          onClick={(event) => { event.stopPropagation(); onKeyboardPort(node.id, side); }}
+          aria-label={`Connect ${node.name} from ${side} port`}
         />
       ))}
     </div>

@@ -283,6 +283,162 @@ fn materialize_workspace(
 }
 
 #[tauri::command]
+fn secret_set(name: String, value: String) -> Result<(), String> {
+    let entry =
+        keyring::Entry::new("com.archiviz.ide", &name).map_err(|error| error.to_string())?;
+    entry
+        .set_password(&value)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn secret_get(name: String) -> Result<String, String> {
+    let entry =
+        keyring::Entry::new("com.archiviz.ide", &name).map_err(|error| error.to_string())?;
+    match entry.get_password() {
+        Ok(value) => Ok(value),
+        Err(keyring::Error::NoEntry) => Ok(String::new()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+#[tauri::command]
+fn secret_delete(name: String) -> Result<(), String> {
+    let entry =
+        keyring::Entry::new("com.archiviz.ide", &name).map_err(|error| error.to_string())?;
+    match entry.delete_credential() {
+        Ok(()) => Ok(()),
+        Err(keyring::Error::NoEntry) => Ok(()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+#[tauri::command]
+fn open_workspace_target(cwd: String, target: String) -> Result<(), String> {
+    let path = PathBuf::from(&cwd);
+    if !path.is_dir() {
+        return Err("The project workspace is not available yet.".to_string());
+    }
+
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let mut command = Command::new("open");
+        match target.as_str() {
+            "vscode" => {
+                command.args(["-a", "Visual Studio Code"]);
+            }
+            "intellij" => {
+                command.args(["-a", "IntelliJ IDEA"]);
+            }
+            "terminal" => {
+                command.args(["-a", "Terminal"]);
+            }
+            "files" => {}
+            _ => return Err("Unsupported workspace target.".to_string()),
+        }
+        command.arg(&path);
+        command
+    };
+
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        let mut command = Command::new("cmd");
+        match target.as_str() {
+            "vscode" => {
+                command.args(["/C", "code"]);
+            }
+            "intellij" => {
+                command.args(["/C", "idea"]);
+            }
+            "terminal" => {
+                command.args(["/C", "start", "cmd", "/K", "cd", "/D"]);
+            }
+            "files" => {
+                command.args(["/C", "start", ""]);
+            }
+            _ => return Err("Unsupported workspace target.".to_string()),
+        }
+        command.arg(&path);
+        command
+    };
+
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+    let mut command = {
+        let mut command = match target.as_str() {
+            "vscode" => Command::new("code"),
+            "intellij" => Command::new("idea"),
+            "terminal" => Command::new("x-terminal-emulator"),
+            "files" => Command::new("xdg-open"),
+            _ => return Err("Unsupported workspace target.".to_string()),
+        };
+        if target == "terminal" {
+            command.current_dir(&path);
+        } else {
+            command.arg(&path);
+        }
+        command
+    };
+
+    command
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("Could not open {}: {}", target, error))
+}
+
+#[tauri::command]
+fn workspace_target_availability() -> HashMap<String, bool> {
+    let mut availability =
+        HashMap::from([("files".to_string(), true), ("terminal".to_string(), true)]);
+
+    #[cfg(target_os = "macos")]
+    {
+        let applications = Path::new("/Applications");
+        availability.insert(
+            "vscode".to_string(),
+            applications.join("Visual Studio Code.app").exists(),
+        );
+        let intellij_available = fs::read_dir(applications)
+            .ok()
+            .into_iter()
+            .flatten()
+            .filter_map(Result::ok)
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .any(|name| name.starts_with("IntelliJ IDEA") && name.ends_with(".app"));
+        availability.insert("intellij".to_string(), intellij_available);
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let available = |program: &str| {
+            Command::new("where")
+                .arg(program)
+                .output()
+                .map(|output| output.status.success())
+                .unwrap_or(false)
+        };
+        availability.insert("vscode".to_string(), available("code"));
+        availability.insert("intellij".to_string(), available("idea"));
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let available = |program: &str| {
+            Command::new("sh")
+                .args(["-c", &format!("command -v {program}")])
+                .output()
+                .map(|output| output.status.success())
+                .unwrap_or(false)
+        };
+        availability.insert("vscode".to_string(), available("code"));
+        availability.insert("intellij".to_string(), available("idea"));
+        availability.insert("files".to_string(), available("xdg-open"));
+        availability.insert("terminal".to_string(), available("x-terminal-emulator"));
+    }
+
+    availability
+}
+
+#[tauri::command]
 fn workspace_materialize(
     app: tauri::AppHandle,
     options: WorkspaceMaterializeOptions,
@@ -518,7 +674,8 @@ fn open_project_window(app: tauri::AppHandle, launch_token: String) -> Result<()
         .map_err(|error| error.to_string())?
         .as_millis();
     let label = format!("project-window-{}-{}", timestamp, counter);
-    let launch_token_json = serde_json::to_string(&launch_token).map_err(|error| error.to_string())?;
+    let launch_token_json =
+        serde_json::to_string(&launch_token).map_err(|error| error.to_string())?;
 
     WebviewWindowBuilder::new(&app, label, WebviewUrl::default())
         .title("Archiviz")
@@ -598,17 +755,26 @@ async fn ai_stream(
     let response = match builder.body(options.body).send().await {
         Ok(r) => r,
         Err(e) => {
-            let _ = app.emit("ai-error", AiErrorEvent { request_id, error: e.to_string() });
+            let _ = app.emit(
+                "ai-error",
+                AiErrorEvent {
+                    request_id,
+                    error: e.to_string(),
+                },
+            );
             return Ok(());
         }
     };
     if !response.status().is_success() {
         let status = response.status().as_u16();
         let text = response.text().await.unwrap_or_default();
-        let _ = app.emit("ai-error", AiErrorEvent {
-            request_id,
-            error: format!("HTTP {}: {}", status, text),
-        });
+        let _ = app.emit(
+            "ai-error",
+            AiErrorEvent {
+                request_id,
+                error: format!("HTTP {}: {}", status, text),
+            },
+        );
         return Ok(());
     }
     let mut stream = response.bytes_stream();
@@ -617,7 +783,13 @@ async fn ai_stream(
         let bytes = match chunk {
             Ok(b) => b,
             Err(e) => {
-                let _ = app.emit("ai-error", AiErrorEvent { request_id, error: e.to_string() });
+                let _ = app.emit(
+                    "ai-error",
+                    AiErrorEvent {
+                        request_id,
+                        error: e.to_string(),
+                    },
+                );
                 return Ok(());
             }
         };
@@ -631,14 +803,22 @@ async fn ai_stream(
                     if let Some(data) = line.strip_prefix("data:") {
                         let data = data.trim();
                         if data == "[DONE]" {
-                            let _ = app.emit("ai-done", AiDoneEvent { request_id: request_id.clone() });
+                            let _ = app.emit(
+                                "ai-done",
+                                AiDoneEvent {
+                                    request_id: request_id.clone(),
+                                },
+                            );
                             return Ok(());
                         }
                         if !data.is_empty() {
-                            let _ = app.emit("ai-token", AiTokenEvent {
-                                request_id: request_id.clone(),
-                                data: data.to_string(),
-                            });
+                            let _ = app.emit(
+                                "ai-token",
+                                AiTokenEvent {
+                                    request_id: request_id.clone(),
+                                    data: data.to_string(),
+                                },
+                            );
                         }
                     }
                 }
@@ -662,6 +842,11 @@ pub fn run() {
             workspace_materialize,
             workspace_command,
             open_project_window,
+            secret_get,
+            secret_set,
+            secret_delete,
+            open_workspace_target,
+            workspace_target_availability,
             ai_fetch,
             ai_stream
         ])

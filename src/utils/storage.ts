@@ -8,9 +8,11 @@ export const storage = {
     }
   },
 
-  set(key: string, value: any) {
+   set(key: string, value: unknown) {
     try {
       localStorage.setItem(key, JSON.stringify(value));
-    } catch {}
+    } catch {
+      // ignore persistence errors (e.g. quota/private mode)
+    }
   }
 };

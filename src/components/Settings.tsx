@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import type { AIProvider, AISettings } from "../services/AIService";
+import { secretDelete, secretGet, secretSet, secureStorageAvailable } from "../utils/secureStore";
 import {
   DEFAULT_EDITOR_SETTINGS,
   DEFAULT_DOCKER_SETTINGS,
@@ -218,12 +219,15 @@ export default function Settings({
       try {
         const parsed = JSON.parse(saved);
         if (parsed && typeof parsed === "object") {
-          setCfg({
-            ...defaultSettings,
-            ...parsed,
-            provider: parsed.provider === "spring-boot" ? "openai" : parsed.provider,
-            baseUrl: parsed.provider === "spring-boot" ? defaultSettings.baseUrl : (parsed.baseUrl ?? defaultSettings.baseUrl),
-            model: parsed.provider === "spring-boot" ? "" : (parsed.model ?? defaultSettings.model),
+          void secretGet("ai_api_key").then(storedKey => {
+            setCfg({
+              ...defaultSettings,
+              ...parsed,
+              apiKey: parsed.apiKey || storedKey || defaultSettings.apiKey,
+              provider: parsed.provider === "spring-boot" ? "openai" : parsed.provider,
+              baseUrl: parsed.provider === "spring-boot" ? defaultSettings.baseUrl : (parsed.baseUrl ?? defaultSettings.baseUrl),
+              model: parsed.provider === "spring-boot" ? "" : (parsed.model ?? defaultSettings.model),
+            });
           });
         }
       } catch {
@@ -302,8 +306,18 @@ export default function Settings({
     if ((cfg.provider === "openai" || cfg.provider === "anthropic") && !cfg.apiKey?.trim()) {
       setError("Please enter your API key."); return;
     }
-    localStorage.setItem("ai_settings", JSON.stringify(cfg));
-    onSave(cfg);
+    void (async () => {
+      const apiKey = cfg.apiKey?.trim() ?? "";
+      const storeOk = apiKey ? await secretSet("ai_api_key", apiKey) : true;
+      if (apiKey && !storeOk && secureStorageAvailable()) {
+        setError("Could not store the API key in the OS keychain.");
+        return;
+      }
+      const sanitized = { ...cfg, apiKey: "" };
+      localStorage.setItem("ai_settings", JSON.stringify(sanitized));
+      localStorage.removeItem("ai_settings_runtime");
+      onSave({ ...sanitized, apiKey: apiKey || cfg.apiKey });
+    })();
   };
 
   const updateEditorSettings = (patch: Partial<EditorSettings>) => {
@@ -350,6 +364,7 @@ export default function Settings({
   };
 
   const logoutFromGitHub = () => {
+    void secretDelete("archiviz_github_token");
     setGitToken("");
     setGitSettings(DEFAULT_GIT_SETTINGS);
     setGitStatus({ kind: "idle", message: "" });
@@ -1074,7 +1089,7 @@ export default function Settings({
 
       {/* Error */}
       {error && (
-        <div style={{ fontSize: 11, color: "#f87171", marginTop: 8, padding: "7px 11px",
+        <div role="alert" style={{ fontSize: 11, color: "#f87171", marginTop: 8, padding: "7px 11px",
           background: "rgba(239,68,68,0.08)", borderRadius: 6, border: "1px solid rgba(239,68,68,0.2)" }}>
           ⚠️ {error}
         </div>
@@ -1084,6 +1099,13 @@ export default function Settings({
         style={{ marginTop: 18, width: "100%", minHeight: 40 }}>
         Save AI Settings
       </button>
+      <button className="btn btn-danger" onClick={() => { void secretDelete("ai_api_key"); localStorage.removeItem("ai_settings_runtime"); update({ apiKey: "" }); }}
+        style={{ marginTop: 10, width: "100%", minHeight: 40 }}>
+        Forget Stored API Key
+      </button>
+      <div className="settings-note" style={{ marginTop: 12 }}>
+        Prompts, attached source files, and architecture context are sent to the selected AI provider when you run generation or chat. Secrets are excluded from project exports.
+      </div>
           </section>
         )}
       </main>

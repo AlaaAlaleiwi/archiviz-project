@@ -47,6 +47,86 @@ type ResponseView = "body" | "headers" | "details";
 const API_HISTORY_KEY = "archiviz_api_tester_history";
 const METHOD_OPTIONS: HttpMethod[] = ["GET", "POST", "PUT", "PATCH", "DELETE"];
 
+function downloadJson(filename: string, data: unknown) {
+  try {
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = filename;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    window.URL.revokeObjectURL(url);
+  } catch (error) {
+    console.warn("[api-export]", error);
+    alert("Export failed.");
+  }
+}
+
+function buildOpenApiSpec(endpoints: ApiEndpoint[], baseUrl: string) {
+  const paths: Record<string, Record<string, unknown>> = {};
+  for (const endpoint of endpoints) {
+    const segments = endpoint.path.replace(/^\//, "").split("/").filter(Boolean);
+    const openApiPath = `/${segments.map(segment => segment.startsWith("{") && segment.endsWith("}") ? `{${segment.slice(1, -1)}}` : segment).join("/")}`;
+    const paramMatches = Array.from(endpoint.path.matchAll(/\{([a-zA-Z0-9_]+)\}/g));
+    paths[openApiPath] ??= {};
+    paths[openApiPath][endpoint.method.toLowerCase()] = {
+      operationId: endpoint.handler,
+      summary: `${endpoint.method} ${endpoint.path} (handled by ${endpoint.handler} in ${endpoint.filePath})`,
+      tags: [endpoint.filePath.split("/").slice(-1)[0] ?? "Default"],
+      parameters: [
+        ...paramMatches.map(paramMatch => ({
+          name: paramMatch[1],
+          in: "path",
+          required: true,
+          schema: { type: "string" },
+        })),
+        ...(endpoint.secured ? [{ name: "Authorization", in: "header", required: true, schema: { type: "string" } }] : []),
+      ],
+      responses: {
+        "200": { description: "OK" },
+        ...(endpoint.secured ? { "401": { description: "Unauthorized" } } : {}),
+      },
+    };
+  }
+  return {
+    openapi: "3.0.3",
+    info: {
+      title: "Archiviz generated API",
+      version: "1.0.0",
+      description: "Auto-generated from @RestController annotations detected in the workspace.",
+    },
+    servers: [{ url: baseUrl }],
+    paths,
+  };
+}
+
+function buildPostmanCollection(endpoints: ApiEndpoint[], baseUrl: string) {
+  const base = baseUrl.replace(/\/+$/, "");
+  return {
+    info: {
+      name: "Archiviz workspace API",
+      _postman_id: `archiviz_${Date.now().toString(36)}`,
+      schema: "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    },
+    item: endpoints.map(endpoint => ({
+      name: `${endpoint.method} ${endpoint.path}`,
+      request: {
+        method: endpoint.method,
+        header: endpoint.secured ? [{ key: "Authorization", value: "Bearer <token>" }] : [],
+        url: {
+          raw: `${base}${endpoint.path}`,
+          host: ["{{baseUrl}}"],
+          path: endpoint.path.replace(/^\//, "").split("/").filter(Boolean),
+          variable: Array.from(endpoint.path.matchAll(/\{([a-zA-Z0-9_]+)\}/g)).map(match => ({ key: match[1], value: "" })),
+        },
+        description: `Handler: ${endpoint.handler} (${endpoint.filePath})`,
+      },
+    })),
+  };
+}
+
 const METHOD_ANNOTATIONS: Array<{ method: HttpMethod; annotation: string }> = [
   { method: "GET", annotation: "GetMapping" },
   { method: "POST", annotation: "PostMapping" },
@@ -341,7 +421,7 @@ export default function ApiTester({ files }: { files: WorkspaceFile[] }) {
     if (endpoints.length > 0 && path === "/api") {
       selectEndpoint(endpoints[0]);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+
   }, [endpoints, path]);
 
   const remember = (item: ApiHistoryItem) => {
@@ -369,11 +449,13 @@ export default function ApiTester({ files }: { files: WorkspaceFile[] }) {
         headers["Content-Type"] = "application/json";
       }
       const startedAt = performance.now();
-      void timeoutMs;
+      const timeout = Number(timeoutMs);
+      const signal = Number.isFinite(timeout) && timeout > 0 ? AbortSignal.timeout(timeout) : undefined;
       const res = await fetch(url, {
         method,
         headers,
         body: showBody ? body : undefined,
+        signal,
       });
       const result = {
         status: res.status,
@@ -394,7 +476,10 @@ export default function ApiTester({ files }: { files: WorkspaceFile[] }) {
         createdAt: new Date().toISOString(),
       });
     } catch (err: any) {
-      const message = err?.message ?? "Request failed.";
+      const aborted = err?.name === "AbortError";
+      const message = aborted
+        ? `Request timed out after ${Number(timeoutMs) || 0} ms.`
+        : err?.message ?? "Request failed.";
       setError(message);
       remember({
         id: Math.random().toString(36).slice(2),
@@ -446,6 +531,26 @@ export default function ApiTester({ files }: { files: WorkspaceFile[] }) {
 
         <div className="api-sidebar-section">
           <div className="api-list-heading">Detected Endpoints</div>
+          <div className="api-export-row">
+            <button
+              type="button"
+              className="file-action-btn"
+              disabled={endpoints.length === 0}
+              title="Download an OpenAPI 3 spec for the detected endpoints"
+              onClick={() => downloadJson("openapi.json", buildOpenApiSpec(endpoints, baseUrl))}
+            >
+              OpenAPI
+            </button>
+            <button
+              type="button"
+              className="file-action-btn"
+              disabled={endpoints.length === 0}
+              title="Download a Postman v2.1 collection"
+              onClick={() => downloadJson("postman_collection.json", buildPostmanCollection(endpoints, baseUrl))}
+            >
+              Postman
+            </button>
+          </div>
           <div className="api-endpoint-list">
             {endpoints.length > 0 ? endpoints.map(endpoint => (
               <button

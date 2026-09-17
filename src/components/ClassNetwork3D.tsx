@@ -157,6 +157,8 @@ function layoutPosition(node: ClassNetworkNode, layout: LayoutType): THREE.Vecto
         radius * Math.sin(angle)
       );
     }
+    case "layers":
+      return new THREE.Vector3(0, 0, 0);
   }
 }
 

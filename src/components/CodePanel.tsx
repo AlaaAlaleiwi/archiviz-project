@@ -163,7 +163,7 @@ export default function CodePanel({
       if (refresh) await refreshGit(false, false);
       return result;
     } catch (error: any) {
-      setGitOutput(error?.message ?? String(error) ?? "Git operation failed.");
+      setGitOutput(error?.message ?? String(error));
       return null;
     } finally {
       setGitBusy(false);
@@ -193,7 +193,7 @@ export default function CodePanel({
       setOriginUrl(origin.ok ? origin.stdout.trim() : "");
       if (showOutput) setGitOutput([status.command, status.stdout, status.stderr].filter(Boolean).join("\n\n"));
     } catch (error: any) {
-      if (showOutput) setGitOutput(error?.message ?? String(error) ?? "Could not refresh Git status.");
+      if (showOutput) setGitOutput(error?.message ?? String(error));
       setGitInitialized(false);
       onGitRepositoryChange?.(false);
     } finally {

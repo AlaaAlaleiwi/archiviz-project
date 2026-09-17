@@ -1,7 +1,8 @@
-import React, { memo, useEffect, useMemo, useRef, useState } from "react";
+import React, { lazy, memo, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import Node from "./Node";
-import Canvas3D from "./Canvas3D";
 import type { Graph, NodeData } from "../types";
+
+const Canvas3D = lazy(() => import("./Canvas3D"));
 
 interface Props {
   canvasRef: React.RefObject<HTMLDivElement | null>;
@@ -20,6 +21,9 @@ interface Props {
   onRename: any;
   onConfigure: (id: string) => void;
   onViewCode: (id: string) => void;
+  onKeyboardMove: (id: string, dx: number, dy: number) => void;
+  onKeyboardPort: (id: string, side: "top" | "right" | "bottom" | "left") => void;
+  onKeyboardSelectEdge: (id: string) => void;
   generatedNodeIds: Set<string>;
   startWire: any;
   moveWire: (clientX: number, clientY: number) => void;
@@ -127,6 +131,9 @@ export default function Canvas({
   onRename,
   onConfigure,
   onViewCode,
+  onKeyboardMove,
+  onKeyboardPort,
+  onKeyboardSelectEdge,
   generatedNodeIds,
   startWire,
   moveWire,
@@ -273,13 +280,17 @@ export default function Canvas({
       </div>
 
       {is3DMode ? (
-        <Canvas3D
-          graph={graph}
-          selectedIds={selectedIds}
-          selectedEdgeId={selectedEdgeId}
-        />
+        <Suspense fallback={<div className="workspace-empty workspace-empty-fill" role="status">Loading 3D view…</div>}>
+          <Canvas3D graph={graph} selectedIds={selectedIds} selectedEdgeId={selectedEdgeId} />
+        </Suspense>
       ) : (
         <>
+          {graph.nodes.length === 0 && (
+            <div className="canvas-empty-state" role="status">
+              <strong>Start designing your system</strong>
+              <span>Choose a component from the library, press Enter or click it to add it, then use its ports to create connections.</span>
+            </div>
+          )}
           <div
             className="grid"
             style={{
@@ -327,6 +338,10 @@ export default function Canvas({
                       className={`edge ${isLargeGraph ? "edge--large-graph" : "animated-edge"} ${selectedEdgeId === e.id ? "selected" : ""}`}
                       markerEnd="url(#arrow)"
                       onPointerDown={(event) => onEdgePointerDown(event, e.id)}
+                      role="button"
+                      tabIndex={0}
+                      aria-label={`Connection from ${a.name} to ${b.name}`}
+                      onFocus={() => onKeyboardSelectEdge(e.id)}
                     />
                     {e.label && labelPos && (
                       <g
@@ -368,6 +383,8 @@ export default function Canvas({
                 onRename={onRename}
                 onConfigure={onConfigure}
                 onViewCode={onViewCode}
+                onKeyboardMove={onKeyboardMove}
+                onKeyboardPort={onKeyboardPort}
                 onExpandClasses={onExpandClasses}
                 onStartWire={startWire}
               />

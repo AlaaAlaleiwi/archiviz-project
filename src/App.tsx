@@ -4,6 +4,8 @@ import {
   useCallback,
   useMemo,
   useEffect,
+  lazy,
+  Suspense,
   type ChangeEvent,
   type DragEvent as ReactDragEvent,
   type PointerEvent as ReactPointerEvent,
@@ -14,9 +16,7 @@ import { invoke } from "@tauri-apps/api/core";
 
 import Palette from "./components/Palette";
 import Canvas from "./components/Canvas";
-import CodePanel from "./components/CodePanel";
-import FileWorkspace, { type WorkspaceFile, type WorkspaceFileGroup } from "./components/FileWorkspace";
-import ApiTester from "./components/ApiTester";
+import type { WorkspaceFile, WorkspaceFileGroup } from "./components/FileWorkspace";
 import Topbar, { ProjectConfigModal, type JavaProjectConfig } from "./components/Topbar";
 import Settings, {
   DEFAULT_DOCKER_SETTINGS,
@@ -32,8 +32,10 @@ import Settings, {
 } from "./components/Settings";
 import NodeConfigModal from "./components/NodeConfigModal";
 import NodeCodeModal from "./components/NodeCodeModal";
-import ChatPanel from "./components/ChatPanel";
-import TerminalDock from "./components/TerminalDock";
+import CommandPalette, { type PaletteAction } from "./components/CommandPalette";
+import TemplatePicker from "./components/TemplatePicker";
+import { listTemplates, removeTemplate, saveTemplate, type WorkspaceTemplate } from "./utils/templateLibrary";
+import GenerationPlanModal from "./components/GenerationPlanModal";
 
 import type { Graph, NodeType, Camera, Language, NodeData, Edge, JavaVersion, SpringBootVersion, BuildTool } from "./types";
 
@@ -44,6 +46,21 @@ import { ProjectScaffoldService } from "./services/ProjectScaffoldService";
 
 import { buildAIPrompt, buildServiceGenerationPrompts } from "./utils/promptBuilder";
 import { analyzeSourceFile } from "./utils/fileAnalysis";
+import { parseGitDiffLineMarks } from "./utils/gitDiff";
+import { parseStackDiagnostics } from "./utils/testOutput";
+import { secretGet, secretSet } from "./utils/secureStore";
+import { applyGenerationPlan, createGenerationPlan, type GenerationChange } from "./utils/generationPlan";
+import { createHistory, recordHistory, redoHistory, undoHistory, type WorkspaceHistory } from "./utils/workspaceHistory";
+import { useDialogFocus } from "./useDialogFocus";
+import { isTauriRuntime } from "./utils/tauriRuntime";
+
+const CodePanel = lazy(() => import("./components/CodePanel"));
+const FileWorkspace = lazy(() => import("./components/FileWorkspace"));
+const ApiTester = lazy(() => import("./components/ApiTester"));
+const ChatPanel = lazy(() => import("./components/ChatPanel"));
+const TerminalDock = lazy(() => import("./components/TerminalDock"));
+
+const WorkspaceLoading = () => <div className="workspace-loading" role="status">Loading workspace…</div>;
 
 const genId = () => Math.random().toString(36).slice(2, 10);
 
@@ -79,6 +96,15 @@ type GenerationProgress = {
   streamPreview: string;
 } | null;
 
+type PendingGeneration = {
+  changes: GenerationChange[];
+  filesByNode: Record<string, WorkspaceFile[]>;
+  baseFiles: WorkspaceFile[];
+};
+
+type WorkspaceTarget = "vscode" | "intellij" | "files" | "terminal";
+type WorkspaceTargetAvailability = Record<WorkspaceTarget, boolean>;
+
 const MIN_SCALE = 0.5;
 const MAX_SCALE = 2.4;
 const ZOOM_STEP = 1.14;
@@ -91,6 +117,8 @@ const WINDOW_LAUNCH_PROJECT_PREFIX = "archiviz_window_launch_";
 const EDITOR_SETTINGS_KEY    = "archiviz_editor_settings";
 const DOCKER_SETTINGS_KEY    = "archiviz_docker_settings";
 const GIT_SETTINGS_KEY       = "archiviz_git_settings";
+const GIT_TOKEN_SECURE_NAME  = "archiviz_github_token";
+const AI_KEY_SECURE_NAME     = "ai_api_key";
 const TERMINAL_SETTINGS_KEY  = "archiviz_terminal_settings";
 const PALETTE_WIDTH_KEY      = "archiviz_palette_width";
 const CODE_PANEL_WIDTH_KEY   = "archiviz_code_panel_width";
@@ -178,6 +206,19 @@ const getNodeServiceRoot = (projectName: string, node: NodeData) =>
   typeof node.config?.serviceRoot === "string" && node.config.serviceRoot.trim()
     ? node.config.serviceRoot
     : toServiceProjectRoot(projectName, node.name);
+
+const parseGitStatusCodes = (stdout: string) => {
+  const map: Record<string, string> = {};
+  for (const raw of stdout.split(/\r?\n/)) {
+    const line = raw.trimEnd();
+    if (!line || line.startsWith("##")) continue;
+    const code = line.slice(0, 2).trim();
+    const rawPath = line.slice(3).trim();
+    const path = rawPath.includes(" -> ") ? rawPath.split(" -> ").pop() ?? "" : rawPath;
+    if (path && code) map[path] = code;
+  }
+  return map;
+};
 
 const stripServiceProjectRoot = (files: WorkspaceFile[], serviceRoot: string) =>
   files.map(file => {
@@ -379,7 +420,7 @@ type BuildDiagnostic = {
 const CODE_AGENT_CONTEXT_LIMIT = 100_000;
 const CODE_AGENT_FILE_LIMIT = 18_000;
 
-const getProjectCommandParts = (mode: "build" | "run", buildTool: BuildTool, files: WorkspaceFile[]) => {
+const getProjectCommandParts = (mode: "build" | "run" | "test", buildTool: BuildTool, files: WorkspaceFile[]) => {
   if (buildTool === "gradle") {
     const program = hasWorkspaceFile(files, "gradlew")
       ? "./gradlew"
@@ -388,7 +429,7 @@ const getProjectCommandParts = (mode: "build" | "run", buildTool: BuildTool, fil
         : "gradle";
     return {
       program,
-      args: mode === "build" ? ["build", "-x", "test"] : ["bootRun"],
+      args: mode === "build" ? ["build", "-x", "test"] : mode === "test" ? ["test"] : ["bootRun"],
     };
   }
 
@@ -399,7 +440,7 @@ const getProjectCommandParts = (mode: "build" | "run", buildTool: BuildTool, fil
       : "mvn";
   return {
     program,
-    args: mode === "build" ? ["clean", "package", "-DskipTests"] : ["spring-boot:run"],
+    args: mode === "build" ? ["clean", "package", "-DskipTests"] : mode === "test" ? ["test"] : ["spring-boot:run"],
   };
 };
 
@@ -583,6 +624,31 @@ type WorkspaceCommandResult = {
 };
 
 type AutoSaveStatus = "idle" | "saving" | "saved" | "error";
+
+type ClearCanvasSnapshot = {
+  graph: Graph;
+  nodeCode: Record<string, { path: string; content: string }[]>;
+  files: WorkspaceFile[];
+  filesImported: boolean;
+  prompt: string;
+  projectName: string;
+  language: Language;
+  detectedFramework: string;
+  savedAt: string;
+};
+
+type WorkspaceSnapshot = {
+  graph: Graph;
+  nodeCode: Record<string, WorkspaceFile[]>;
+  workspaceFiles: WorkspaceFile[];
+  workspaceFilesImported: boolean;
+  prompt: string;
+  projectName: string;
+  javaVersion: JavaVersion;
+  springBootVersion: SpringBootVersion;
+  buildTool: BuildTool;
+  dockerSettings: DockerSettings;
+};
 
 const toRecentProjectId = (project: { name: string; path?: string; fileName?: string }) =>
   project.path || project.fileName || project.name;
@@ -774,6 +840,27 @@ export default function App() {
     } catch { /* ignore */ }
     return null;
   });
+  useEffect(() => {
+    void (async () => {
+      // migrate legacy plaintext keys into secure storage, then strip them
+      try {
+        const saved = JSON.parse(localStorage.getItem("ai_settings") ?? "null");
+        if (saved && typeof saved.apiKey === "string" && saved.apiKey.trim()) {
+          await secretSet(AI_KEY_SECURE_NAME, saved.apiKey.trim());
+          localStorage.setItem("ai_settings", JSON.stringify({ ...saved, apiKey: "" }));
+        }
+      } catch { /* ignore */ }
+
+      const stored = await secretGet(AI_KEY_SECURE_NAME);
+      localStorage.removeItem("ai_settings_runtime");
+      if (!stored) return;
+      setSettings(prev => {
+        if (!prev) return prev;
+        const nextKey = prev.apiKey || stored || "";
+        return nextKey === prev.apiKey ? prev : { ...prev, apiKey: nextKey };
+      });
+    })();
+  }, []);
   const [editorSettings, setEditorSettings] = useState<EditorSettings>(loadEditorSettings);
   const [terminalSettings, setTerminalSettings] = useState<TerminalSettings>(loadTerminalSettings);
   const [dockerSettings, setDockerSettings] = useState<DockerSettings>(loadDockerSettings);
@@ -801,15 +888,32 @@ export default function App() {
   const [recentProjects, setRecentProjects] = useState<RecentProject[]>(loadRecentProjects);
   const [autosavedProject, setAutosavedProject] = useState<SavedProjectFile | null>(loadAutosavedProject);
   const [autoSaveStatus, setAutoSaveStatus] = useState<AutoSaveStatus>("idle");
+  const [autosaveError, setAutosaveError] = useState<string | null>(null);
+  const [showAutosaveDetails, setShowAutosaveDetails] = useState(false);
+  const [autosaveTick, setAutosaveTick] = useState(0);
+  const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
+  const closeClearConfirm = useCallback(() => setClearConfirmOpen(false), []);
+  const clearDialogRef = useDialogFocus<HTMLDivElement>(closeClearConfirm, clearConfirmOpen);
+  const ignoreStartupEscape = useCallback(() => undefined, []);
+  const startupDialogRef = useDialogFocus<HTMLDivElement>(ignoreStartupEscape, !activeProjectStarted);
+  const [clearUndoAvailable, setClearUndoAvailable] = useState(false);
+  const clearSnapshotRef = useRef<ClearCanvasSnapshot | null>(null);
   const [lastAutoSavedAt, setLastAutoSavedAt] = useState<string | null>(autosavedProject?.savedAt ?? null);
 
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [wire, setWire] = useState<WireState>(null);
+  const [, setKeyboardWire] = useState<{ from: string; side: Edge["fromSide"] } | null>(null);
   const [drag, setDrag] = useState<DragState>(null);
   const [pan, setPan] = useState<PanState>(null);
   const [showSettings, setShowSettings] = useState(false);
+  const closeSettings = useCallback(() => setShowSettings(false), []);
+  const settingsDialogRef = useDialogFocus<HTMLDivElement>(closeSettings, showSettings);
   const [showChat, setShowChat] = useState(false);
+  const [showCommandPalette, setShowCommandPalette] = useState(false);
+  const [templatesBusy, setTemplatesBusy] = useState(false);
+  const [templates, setTemplates] = useState<WorkspaceTemplate[]>(() => listTemplates());
+  const [showTemplates, setShowTemplates] = useState(false);
   const [chatMinimized, setChatMinimized] = useState(false);
   const [chatUnread, setChatUnread] = useState(0);
   const [configuringNodeId, setConfiguringNodeId] = useState<string | null>(null);
@@ -821,14 +925,20 @@ export default function App() {
   const [activeWorkspacePath, setActiveWorkspacePath] = useState<string | null>(null);
   const [activeWorkspaceGroupId, setActiveWorkspaceGroupId] = useState("all");
   const [buildDiagnostics, setBuildDiagnostics] = useState<BuildDiagnostic[]>([]);
-  const [workspaceView, setWorkspaceView] = useState<"canvas" | "editor" | "api" | null>("canvas");
+  const [workspaceView, setWorkspaceView] = useState<"canvas" | "build" | "editor" | "api" | null>("canvas");
   const [gitRepositoryReady, setGitRepositoryReady] = useState(false);
   const [projectGenerating, setProjectGenerating] = useState(false);
   const [generationProgress, setGenerationProgress] = useState<GenerationProgress>(null);
+  const [pendingGeneration, setPendingGeneration] = useState<PendingGeneration | null>(null);
   const [codeAgentRunning, setCodeAgentRunning] = useState(false);
   const [codeAgentOutput, setCodeAgentOutput] = useState("");
-  const [runnerBusy] = useState(false);
+  const [runnerBusy, setRunnerBusy] = useState(false);
+  const [validationStatus, setValidationStatus] = useState<"idle" | "running" | "ready" | "build-failed" | "tests-failed" | "cancelled">("idle");
+  const [workspaceTargetAvailability, setWorkspaceTargetAvailability] = useState<WorkspaceTargetAvailability | null>(null);
   const [genError, setGenError] = useState<{ message: string; failedNodes?: string[] } | null>(null);
+  const [gitFileStatuses, setGitFileStatuses] = useState<Record<string, string>>({});
+  const [gitDiffMarks, setGitDiffMarks] = useState<Record<string, { added: number[]; removed: number[] }>>({});
+  const lastGitSignatureRef = useRef("");
 
   const [camera, setCamera] = useState<Camera>({ x: 120, y: 72, scale: 1 });
 
@@ -841,12 +951,34 @@ export default function App() {
   const lastSavedSignatureRef = useRef<string>(autosavedProject ? getProjectSignature(autosavedProject) : "");
   const buildOnOpenRef = useRef(false);
   const codeAgentAbortRef = useRef<AbortController | null>(null);
+  const workspaceHistoryRef = useRef<WorkspaceHistory<WorkspaceSnapshot> | null>(null);
+  const applyingHistoryRef = useRef(false);
+  const [historyVersion, setHistoryVersion] = useState(0);
 
-  const toggleWorkspaceView = useCallback((view: "canvas" | "editor" | "api") => {
+  const toggleWorkspaceView = useCallback((view: "canvas" | "build" | "editor" | "api") => {
     setWorkspaceView(current => current === view ? null : view);
   }, []);
 
   const showTopbar = activeProjectStarted && !viewingNodeId;
+
+  useEffect(() => {
+    if (!activeProjectStarted) return;
+    if (!isTauriRuntime()) {
+      setWorkspaceTargetAvailability({ vscode: false, intellij: false, files: false, terminal: false });
+      return;
+    }
+    void invoke<WorkspaceTargetAvailability>("workspace_target_availability")
+      .then(setWorkspaceTargetAvailability)
+      .catch(() => setWorkspaceTargetAvailability(null));
+  }, [activeProjectStarted]);
+
+  const startFromDescription = useCallback(() => {
+    createNewProjectRef.current?.();
+    setActiveProjectStarted(true);
+    setWorkspaceView("build");
+  }, []);
+
+  const createNewProjectRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     localStorage.setItem("archiviz_theme", theme);
@@ -869,8 +1001,29 @@ export default function App() {
   }, [dockerSettings]);
 
   useEffect(() => {
-    localStorage.setItem(GIT_SETTINGS_KEY, JSON.stringify(gitSettings));
+    void (async () => {
+      const token = gitSettings.githubToken?.trim() ?? "";
+      if (token) {
+        const storedSecure = await secretSet(GIT_TOKEN_SECURE_NAME, token);
+        if (storedSecure) {
+          // never keep the token in plaintext localStorage
+          localStorage.setItem(GIT_SETTINGS_KEY, JSON.stringify({ githubToken: "", githubUser: gitSettings.githubUser }));
+          return;
+        }
+      }
+      localStorage.setItem(GIT_SETTINGS_KEY, JSON.stringify({ githubToken: "", githubUser: gitSettings.githubUser }));
+    })();
   }, [gitSettings]);
+
+  useEffect(() => {
+    void (async () => {
+      const stored = await secretGet(GIT_TOKEN_SECURE_NAME);
+      const legacy = loadGitSettings();
+      if (stored && stored !== legacy.githubToken) {
+        setGitSettings(prev => ({ ...prev, githubToken: stored }));
+      }
+    })();
+  }, []);
 
   useEffect(() => {
     localStorage.setItem(PALETTE_WIDTH_KEY, String(paletteWidth));
@@ -968,15 +1121,90 @@ export default function App() {
     () => getProjectSignature(buildProjectPayload("")),
     [buildProjectPayload]
   );
-  const hasUnsavedChanges = activeProjectStarted && projectSignature !== lastSavedSignatureRef.current;
-  const autoSaveLabel = autoSaveStatus === "saving"
-    ? "Autosaving..."
-    : autoSaveStatus === "error"
-      ? "Autosave failed"
-      : lastAutoSavedAt
-        ? `Autosaved ${new Date(lastAutoSavedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
-        : "Autosave ready";
+  const workspaceSnapshot = useMemo<WorkspaceSnapshot>(() => ({
+    graph,
+    nodeCode,
+    workspaceFiles,
+    workspaceFilesImported,
+    prompt,
+    projectName,
+    javaVersion,
+    springBootVersion,
+    buildTool,
+    dockerSettings,
+  }), [buildTool, dockerSettings, graph, javaVersion, nodeCode, projectName, prompt, springBootVersion, workspaceFiles, workspaceFilesImported]);
 
+  useEffect(() => {
+    if (!activeProjectStarted) return;
+    if (applyingHistoryRef.current) {
+      applyingHistoryRef.current = false;
+      return;
+    }
+    if (!workspaceHistoryRef.current) {
+      workspaceHistoryRef.current = createHistory(workspaceSnapshot);
+      setHistoryVersion(version => version + 1);
+      return;
+    }
+    const timeout = window.setTimeout(() => {
+      const history = workspaceHistoryRef.current;
+      if (!history || JSON.stringify(history.present) === JSON.stringify(workspaceSnapshot)) return;
+      const nodeDelta = workspaceSnapshot.graph.nodes.length - history.present.graph.nodes.length;
+      const fileDelta = workspaceSnapshot.workspaceFiles.length - history.present.workspaceFiles.length;
+      const label = nodeDelta !== 0 ? `${nodeDelta > 0 ? "Added" : "Removed"} architecture component`
+        : fileDelta !== 0 ? `${fileDelta > 0 ? "Added" : "Removed"} project files`
+        : "Updated workspace";
+      workspaceHistoryRef.current = recordHistory(history, workspaceSnapshot, label);
+      setHistoryVersion(version => version + 1);
+    }, 350);
+    return () => window.clearTimeout(timeout);
+  }, [activeProjectStarted, workspaceSnapshot]);
+
+  const applyWorkspaceSnapshot = useCallback((snapshot: WorkspaceSnapshot) => {
+    applyingHistoryRef.current = true;
+    setGraph(snapshot.graph);
+    setNodeCode(snapshot.nodeCode);
+    setWorkspaceFiles(snapshot.workspaceFiles);
+    setWorkspaceFilesImported(snapshot.workspaceFilesImported);
+    setPrompt(snapshot.prompt);
+    setProjectName(snapshot.projectName);
+    setJavaVersion(snapshot.javaVersion);
+    setSpringBootVersion(snapshot.springBootVersion);
+    setBuildTool(snapshot.buildTool);
+    setDockerSettings(snapshot.dockerSettings);
+    setSelectedIds([]);
+    setSelectedEdgeId(null);
+  }, []);
+
+  const undoWorkspace = useCallback(() => {
+    const history = workspaceHistoryRef.current;
+    if (!history?.past.length) return;
+    const next = undoHistory(history);
+    workspaceHistoryRef.current = next;
+    applyWorkspaceSnapshot(next.present);
+    setHistoryVersion(version => version + 1);
+  }, [applyWorkspaceSnapshot]);
+
+  const redoWorkspace = useCallback(() => {
+    const history = workspaceHistoryRef.current;
+    if (!history?.future.length) return;
+    const next = redoHistory(history);
+    workspaceHistoryRef.current = next;
+    applyWorkspaceSnapshot(next.present);
+    setHistoryVersion(version => version + 1);
+  }, [applyWorkspaceSnapshot]);
+
+  useEffect(() => {
+    const handleHistoryKeys = (event: KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== "z") return;
+      const target = event.target as HTMLElement | null;
+      if (target?.matches("input, textarea, [contenteditable='true']")) return;
+      event.preventDefault();
+      if (event.shiftKey) redoWorkspace(); else undoWorkspace();
+    };
+    window.addEventListener("keydown", handleHistoryKeys);
+    return () => window.removeEventListener("keydown", handleHistoryKeys);
+  }, [redoWorkspace, undoWorkspace]);
+  const hasUnsavedChanges = activeProjectStarted && projectSignature !== lastSavedSignatureRef.current;
   useEffect(() => {
     if (!activeProjectStarted) return;
 
@@ -1000,15 +1228,23 @@ export default function App() {
         }
 
         lastSavedSignatureRef.current = getProjectSignature(payload);
+        setAutosaveError(null);
         setAutoSaveStatus("saved");
       } catch (error) {
-        console.error("[autosave]", error);
+        console.warn("[autosave] failure:", error instanceof Error ? error.message : String(error));
+        setAutosaveError(error instanceof Error ? error.message : String(error));
         setAutoSaveStatus("error");
       }
     }, AUTOSAVE_DEBOUNCE_MS);
 
     return () => window.clearTimeout(timeout);
-  }, [activeProjectStarted, activeRecentProjectId, buildProjectPayload, projectFileHandle]);
+  }, [activeProjectStarted, activeRecentProjectId, buildProjectPayload, projectFileHandle, autosaveTick]);
+
+  const retryAutosave = useCallback(() => {
+    setAutosaveTick(tick => tick + 1);
+  }, []);
+
+  const autosaveDestination = projectFileHandle ? "Project (.archiviz file on disk)" : "Local autosave snapshot";
 
   /* =======================
      GRAPH ACTIONS
@@ -1034,6 +1270,24 @@ export default function App() {
       nodes: g.nodes.map((n) => (n.id === id ? { ...n, name } : n)),
     }));
   };
+
+  const onKeyboardMoveNode = useCallback((id: string, dx: number, dy: number) => {
+    setGraph(current => ({ ...current, nodes: current.nodes.map(node => node.id === id ? { ...node, x: node.x + dx, y: node.y + dy } : node) }));
+    setSelectedIds([id]);
+  }, []);
+
+  const onKeyboardPort = useCallback((id: string, side: Edge["fromSide"]) => {
+    setKeyboardWire(current => {
+      if (!current) {
+        setSelectedIds([id]);
+        return { from: id, side };
+      }
+      if (current.from !== id) {
+        setGraph(graphValue => ({ ...graphValue, edges: [...graphValue.edges, { id: genId(), from: current.from, to: id, fromSide: current.side, toSide: side }] }));
+      }
+      return null;
+    });
+  }, []);
 
   const onDeleteEdge = useCallback((edgeId: string) => {
     setGraph((g) => ({
@@ -1304,7 +1558,46 @@ export default function App() {
     setPan(null);
   }, []);
 
+  const undoClearCanvasSnapshot = useCallback((snapshot: ClearCanvasSnapshot) => {
+    setGraph(snapshot.graph);
+    setNodeCode(snapshot.nodeCode);
+    setWorkspaceFiles(snapshot.files);
+    setWorkspaceFilesImported(snapshot.filesImported);
+    setPrompt(snapshot.prompt);
+    setProjectName(snapshot.projectName);
+    setLanguage(snapshot.language);
+    setDetectedFramework(snapshot.detectedFramework);
+    setWorkspaceView("canvas");
+    setActiveProjectStarted(true);
+    setActiveRecentProjectId(null);
+    setClearUndoAvailable(false);
+  }, []);
+
   const clearCanvas = useCallback(() => {
+    if (graph.nodes.length > 0 || workspaceFiles.length > 0) {
+      setClearConfirmOpen(true);
+      return;
+    }
+    clearCanvasRefs.current?.();
+  }, [graph.nodes.length, workspaceFiles.length]);
+
+  const performClearCanvas = useCallback(() => {
+    const snapshot: ClearCanvasSnapshot = {
+      graph,
+      nodeCode,
+      files: workspaceFiles,
+      filesImported: workspaceFilesImported,
+      prompt,
+      projectName,
+      language,
+      detectedFramework,
+      savedAt: new Date().toISOString(),
+    };
+    clearSnapshotRef.current = snapshot;
+    try {
+      localStorage.setItem("archiviz_clear_snapshot", JSON.stringify(snapshot));
+    } catch { /* ignore quota */ }
+    setClearUndoAvailable(true);
     setGraph({ nodes: [], edges: [] });
     setLanguage("java");
     setDetectedFramework("Spring Boot");
@@ -1323,9 +1616,24 @@ export default function App() {
     setGitRepositoryReady(false);
     setActiveRecentProjectId(null);
     setCamera({ x: 120, y: 72, scale: 1 });
-  }, []);
+    setClearConfirmOpen(false);
+  }, [graph, nodeCode, workspaceFiles, workspaceFilesImported, prompt, projectName, language, detectedFramework]);
+
+  const clearCanvasRefs = useRef<(() => void) | null>(null);
+  clearCanvasRefs.current = performClearCanvas;
+
+  const undoClearCanvas = useCallback(() => {
+    try {
+      const raw = localStorage.getItem("archiviz_clear_snapshot");
+      const snapshot = clearSnapshotRef.current ?? (raw ? JSON.parse(raw) as ClearCanvasSnapshot : null);
+      if (snapshot) undoClearCanvasSnapshot(snapshot);
+    } catch {
+      alert("Could not restore the cleared workspace.");
+    }
+  }, [undoClearCanvasSnapshot]);
 
   const createNewProject = useCallback(() => {
+    workspaceHistoryRef.current = null;
     setProjectName("architecture-app");
     setLanguage("java");
     setDetectedFramework("Spring Boot");
@@ -1352,6 +1660,7 @@ export default function App() {
     lastSavedSignatureRef.current = "";
     setAutoSaveStatus("idle");
   }, []);
+  createNewProjectRef.current = createNewProject;
 
   const createConfiguredProject = useCallback((cfg: JavaProjectConfig) => {
     createNewProject();
@@ -1365,6 +1674,7 @@ export default function App() {
   }, [createNewProject]);
 
   const applyProjectData = useCallback((parsed: SavedProjectFile) => {
+    workspaceHistoryRef.current = null;
     setProjectName(parsed.projectName);
     setLanguage("java");
     setDetectedFramework("Spring Boot");
@@ -1497,6 +1807,10 @@ export default function App() {
   }, [openParsedProject]);
 
   const onOpenProjectInNewWindow = useCallback(async () => {
+    if (!isTauriRuntime()) {
+      alert("Opening another project window is available in the Archiviz desktop app.");
+      return;
+    }
     const payload = buildProjectPayload();
     const launchToken = `${Date.now()}-${genId()}`;
     const launchKey = getWindowLaunchProjectKey(launchToken);
@@ -1901,6 +2215,9 @@ export default function App() {
   }, [activeWorkspaceGroupId, serviceFileGroups]);
 
   const materializeProjectWorkspace = useCallback(async (filesOverride?: WorkspaceFile[], projectNameOverride?: string) => {
+    if (!isTauriRuntime()) {
+      throw new Error("This action requires the Archiviz desktop app. ZIP export remains available in the browser.");
+    }
     const files = filesOverride ?? getRunnableProjectFiles();
     if (files.length === 0) {
       throw new Error("Generate or create project files first.");
@@ -1914,9 +2231,18 @@ export default function App() {
     });
   }, [getRunnableProjectFiles, projectName]);
 
+  const openWorkspaceTarget = useCallback(async (target: WorkspaceTarget) => {
+    try {
+      const { cwd } = await materializeProjectWorkspace();
+      await invoke("open_workspace_target", { cwd, target });
+    } catch (error) {
+      setGenError({ message: error instanceof Error ? error.message : String(error) });
+    }
+  }, [materializeProjectWorkspace]);
+
   const checkProjectBuild = useCallback(async (filesOverride?: WorkspaceFile[]) => {
     const files = filesOverride ?? getRunnableProjectFiles();
-    if (files.length === 0) return;
+    if (files.length === 0) return false;
 
     const command = getProjectCommandParts("build", buildTool, files);
     try {
@@ -1930,11 +2256,25 @@ export default function App() {
       });
       const diagnostics = result.ok ? [] : parseBuildDiagnostics(`${result.stdout}\n${result.stderr}`, files);
       setBuildDiagnostics(diagnostics);
+      setValidationStatus(result.ok ? "running" : "build-failed");
+      return result.ok;
     } catch (error) {
       console.warn("[build-check]", error);
       setBuildDiagnostics([]);
+      setValidationStatus("build-failed");
+      return false;
     }
   }, [buildTool, getRunnableProjectFiles, projectName]);
+
+  const runBuildCapture = useCallback(async (filesOverride?: WorkspaceFile[]) => {
+    setRunnerBusy(true);
+    setValidationStatus("running");
+    try {
+      return await checkProjectBuild(filesOverride);
+    } finally {
+      setRunnerBusy(false);
+    }
+  }, [checkProjectBuild]);
 
   const runTopbarGit = useCallback(async (args: string[], filesOverride?: WorkspaceFile[], projectNameOverride?: string) => {
     return invoke<GitRunResult>("git_run", {
@@ -1951,17 +2291,133 @@ export default function App() {
     try {
       const status = await runTopbarGit(["status", "--short", "--branch"], files);
       setGitRepositoryReady(status.isRepository);
+
+      const strippedToWorkspace = new Map<string, string>();
+      if (activeServiceGroup) {
+        const node = graph.nodes.find(item => item.id === activeServiceGroup.id);
+        const serviceRoot = node
+          ? getNodeServiceRoot(projectName, node)
+          : toServiceProjectRoot(projectName, activeServiceGroup.label);
+        for (const file of activeServiceGroup.files) {
+          const stripped = file.path.startsWith(`${serviceRoot}/`)
+            ? file.path.slice(serviceRoot.length + 1)
+            : file.path;
+          strippedToWorkspace.set(stripped, file.path);
+        }
+      } else {
+        files.forEach(file => strippedToWorkspace.set(file.path, file.path));
+      }
+
+      const codes = parseGitStatusCodes(status.stdout);
+      const mapped: Record<string, string> = {};
+      for (const [gitPath, code] of Object.entries(codes)) {
+        const workspacePath = strippedToWorkspace.get(gitPath)
+          ?? files.map(file => file.path).find(p => p.endsWith(`/${gitPath}`));
+        if (workspacePath) mapped[workspacePath] = code;
+      }
+      setGitFileStatuses(mapped);
     } catch {
       setGitRepositoryReady(false);
+      setGitFileStatuses({});
     }
-  }, [getActiveGitFiles, runTopbarGit]);
+  }, [activeServiceGroup, getActiveGitFiles, graph.nodes, projectName, runTopbarGit]);
 
   useEffect(() => {
-    void refreshTopbarGit();
-  }, [refreshTopbarGit]);
+    const signature = getActiveGitFiles()
+      .map(file => `${file.path}:${file.content.length}`)
+      .join("|");
+    if (signature === lastGitSignatureRef.current) return;
+    lastGitSignatureRef.current = signature;
+    const timer = window.setTimeout(() => {
+      void refreshTopbarGit();
+    }, 600);
+    return () => window.clearTimeout(timer);
+  }, [refreshTopbarGit, getActiveGitFiles]);
 
-  const runProjectCommand = useCallback(async (mode: "build" | "run") => {
+  const refreshGitDiff = useCallback(async (workspacePath: string) => {
+    if (!workspacePath) return;
+    let gitPath = workspacePath;
+    if (activeServiceGroup) {
+      const node = graph.nodes.find(item => item.id === activeServiceGroup.id);
+      const serviceRoot = node
+        ? getNodeServiceRoot(projectName, node)
+        : toServiceProjectRoot(projectName, activeServiceGroup.label);
+      if (workspacePath.startsWith(`${serviceRoot}/`)) {
+        gitPath = workspacePath.slice(serviceRoot.length + 1);
+      }
+    }
     try {
+      const diff = await runTopbarGit(["diff", "--unified=0", "--", gitPath]);
+      const marks = diff.ok ? parseGitDiffLineMarks(diff.stdout) : { added: [], removed: [] };
+      setGitDiffMarks(prev => (prev[workspacePath] === marks ? prev : { ...prev, [workspacePath]: marks }));
+    } catch {
+      setGitDiffMarks(prev => ({ ...prev, [workspacePath]: { added: [], removed: [] } }));
+    }
+  }, [activeServiceGroup, graph.nodes, projectName, runTopbarGit]);
+
+  useEffect(() => {
+    if (!activeWorkspacePath) return;
+    void refreshGitDiff(activeWorkspacePath);
+  }, [activeWorkspacePath, refreshGitDiff]);
+
+  useEffect(() => {
+    const keyDown = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        setShowCommandPalette(prev => !prev);
+        return;
+      }
+      if (event.key === "Escape" && showCommandPaletteRef.current) {
+        setShowCommandPalette(false);
+      }
+    };
+    window.addEventListener("keydown", keyDown);
+    return () => window.removeEventListener("keydown", keyDown);
+  }, []);
+
+  const showCommandPaletteRef = useRef(false);
+  showCommandPaletteRef.current = showCommandPalette;
+
+  const runTestCapture = useCallback(async (filesOverride?: WorkspaceFile[]) => {
+    const files = filesOverride ?? getRunnableProjectFiles();
+    if (files.length === 0) {
+      alert("Generate or import a project with tests first.");
+      return false;
+    }
+    setRunnerBusy(true);
+    try {
+      const command = getProjectCommandParts("test", buildTool, files);
+      const result = await invoke<WorkspaceCommandResult>("workspace_command", {
+        options: {
+          projectName: activeServiceProjectName,
+          files,
+          program: command.program,
+          args: command.args,
+        },
+      });
+      const combined = `${result.stdout}\n${result.stderr}`;
+      const stackDiagnostics = parseStackDiagnostics(combined, files);
+      const buildDiagnosticsFromOutput = result.ok ? [] : parseBuildDiagnostics(combined, files);
+      const merged = [...buildDiagnosticsFromOutput, ...stackDiagnostics.filter(stack => !buildDiagnosticsFromOutput.some(diagnostic => diagnostic.path === stack.path && diagnostic.lineNumber === stack.lineNumber))];
+      setBuildDiagnostics(merged);
+      setWorkspaceView("editor");
+      if (result.ok) {
+        window.dispatchEvent(new CustomEvent("archiviz:terminal-command", {
+          detail: { title: "Tests", command: `# ${formatCommandLine(command)} passed` },
+        }));
+      }
+      setValidationStatus(result.ok ? "ready" : "tests-failed");
+      return result.ok;
+    } catch (error: any) {
+      alert(error?.message ?? "Could not run the test suite.");
+      setValidationStatus("tests-failed");
+      return false;
+    } finally {
+      setRunnerBusy(false);
+    }
+  }, [activeServiceProjectName, buildTool, getRunnableProjectFiles]);
+
+  const runProjectCommand = useCallback(async (mode: "build" | "run") => {    try {
       const files = getActiveGitFiles();
       const { cwd } = await materializeProjectWorkspace(files, activeServiceProjectName);
       const command = formatCommandLine(getProjectCommandParts(mode, buildTool, files));
@@ -1977,6 +2433,87 @@ export default function App() {
       alert(error?.message ?? "Could not prepare the project workspace.");
     }
   }, [activeServiceProjectName, buildTool, getActiveGitFiles, materializeProjectWorkspace]);
+
+  const saveWorkspaceAsTemplate = useCallback(async () => {
+    const files = getRunnableProjectFiles();
+    if (files.length === 0) {
+      alert("Nothing to save yet — generate or import a project first.");
+      return;
+    }
+    const name = window.prompt("Template name", projectName || "My architecture");
+    if (!name?.trim()) return;
+    setTemplatesBusy(true);
+    try {
+      const template = saveTemplate(name, graph, files, {
+        projectName: projectName || "",
+        language,
+        buildTool,
+      });
+      setTemplates(listTemplates());
+      alert(`Saved template "${template.name}" (${files.length} files).`);
+    } catch {
+      alert("Could not save the template (storage may be full).");
+    } finally {
+      setTemplatesBusy(false);
+    }
+  }, [graph, getRunnableProjectFiles, language, buildTool, projectName]);
+
+  const loadTemplateIntoWorkspace = useCallback((template: WorkspaceTemplate) => {
+    const templateGraph = template.graph as Graph | undefined;
+    if (!templateGraph || !Array.isArray(templateGraph.nodes)) {
+      alert("This template is corrupted.");
+      return;
+    }
+    const templateFiles = template.files.map(file => ({ path: file.path, content: file.content }));
+    setProjectName(template.meta.projectName ?? template.name);
+    if (template.meta.language === "java" || template.meta.language === "typescript" || template.meta.language === "python") {
+      setLanguage(template.meta.language as Language);
+    }
+    if (template.meta.buildTool === "maven" || template.meta.buildTool === "gradle") {
+      setBuildTool(template.meta.buildTool as BuildTool);
+    }
+    setWorkspaceFilesImported(false);
+    setWorkspaceFiles(templateFiles);
+    setGraph({ nodes: templateGraph.nodes, edges: Array.isArray(templateGraph.edges) ? templateGraph.edges : [] });
+    setNodeCode(Object.fromEntries(
+      templateGraph.nodes.map(node => [node.id, getWorkspaceFilesForNode(node, templateFiles)])
+    ));
+    setActiveProjectStarted(true);
+    setActiveWorkspaceGroupId("all");
+    setWorkspaceView("canvas");
+    setSelectedIds([]);
+    setSelectedEdgeId(null);
+    setViewingNodeId(null);
+    setPrompt(buildAIPrompt({ nodes: templateGraph.nodes, edges: Array.isArray(templateGraph.edges) ? templateGraph.edges : [] }, javaVersion, springBootVersion, template.meta.projectName ?? template.name, buildTool, { existingFiles: templateFiles }));
+    setShowTemplates(false);
+    window.dispatchEvent(new CustomEvent("archiviz:terminal-command", {
+      detail: { title: "Template", command: `# Loaded template "${template.name}" with ${templateFiles.length} files` },
+    }));
+  }, [javaVersion, springBootVersion, buildTool]);
+
+  const paletteActions = useMemo<PaletteAction[]>(() => [
+    { id: "build", label: "Build project", hint: "Maven/Gradle", run: () => void runProjectCommand("build") },
+    { id: "run", label: "Run project", hint: "spring-boot:run", run: () => void runProjectCommand("run") },
+    { id: "test", label: "Run tests (capture diagnostics)", hint: "→ Problems list", run: () => { void runTestCapture(); } },
+    { id: "editor", label: "Open editor view", run: () => setWorkspaceView("editor") },
+    { id: "canvas", label: "Open canvas", run: () => setWorkspaceView("canvas") },
+    { id: "api", label: "Open API tester", run: () => setWorkspaceView("api") },
+    { id: "chat", label: "Toggle AI chat", run: () => { setShowChat(true); setChatMinimized(false); } },
+    { id: "refresh-git", label: "Refresh git status", run: () => void refreshTopbarGit() },
+    { id: "save-template", label: "Save workspace as template", run: () => { void saveWorkspaceAsTemplate(); } },
+    { id: "templates", label: "Open template library", hint: `${templates.length} saved`, run: () => setShowTemplates(true) },
+    { id: "settings", label: "Open settings", run: () => setShowSettings(true) },
+  ], [runProjectCommand, runTestCapture, refreshTopbarGit, saveWorkspaceAsTemplate, templates.length]);
+
+  useEffect(() => {
+    const openFile = (event: Event) => {
+      const path = (event as CustomEvent<string>).detail as string;
+      setWorkspaceView("editor");
+      setActiveWorkspacePath(path);
+    };
+    window.addEventListener("archiviz:palette-open-file", openFile);
+    return () => window.removeEventListener("archiviz:palette-open-file", openFile);
+  }, []);
 
   useEffect(() => {
     if (!buildOnOpenRef.current || !activeProjectStarted) return;
@@ -2045,20 +2582,18 @@ export default function App() {
     const controller = new AbortController();
     abortRef.current = controller;
 
+    const proposedFiles = new Map<string, WorkspaceFile>();
+    const proposedByNode = new Map<string, Map<string, WorkspaceFile>>();
     try {
       const publishFiles = (nodeId: string | null, nextFiles: WorkspaceFile[]) => {
         if (nextFiles.length === 0) return;
         const visibleFiles = dedupeFiles(nextFiles);
-        setWorkspaceFiles(prev => dedupeFiles([...prev, ...visibleFiles]));
+        visibleFiles.forEach(file => proposedFiles.set(file.path, file));
         if (nodeId) {
-          setNodeCode(prev => ({
-            ...prev,
-            [nodeId]: dedupeFiles([...(prev[nodeId] ?? []), ...visibleFiles]),
-          }));
-          setActiveWorkspaceGroupId(nodeId);
+          const nodeFiles = proposedByNode.get(nodeId) ?? new Map<string, WorkspaceFile>();
+          visibleFiles.forEach(file => nodeFiles.set(file.path, file));
+          proposedByNode.set(nodeId, nodeFiles);
         }
-        setActiveWorkspacePath(visibleFiles.at(-1)?.path ?? null);
-        setWorkspaceView("editor");
       };
 
       const streamPromptToEditor = async (
@@ -2071,6 +2606,7 @@ export default function App() {
         },
       ) => {
         let raw = "";
+        let streamTruncated = false;
         const published = new Set<string>();
 
         const publishCompletedFromRaw = (includeCurrentFile: boolean) => {
@@ -2098,11 +2634,18 @@ export default function App() {
             raw += token;
             publishCompletedFromRaw(false);
           },
-          controller.signal
+          controller.signal,
+          meta => { streamTruncated = meta.finishReason === "length"; }
         );
 
         raw = finalRaw || raw;
         publishCompletedFromRaw(true);
+
+        if (streamTruncated) {
+          setGenError({
+            message: `${progressMeta.serviceName}: the AI response hit the model's output limit before finishing. The last generated file(s) may be incomplete — raise the Max Tokens setting or generate files individually.`,
+          });
+        }
       };
 
       if (servicePrompts.length > 1) {
@@ -2144,6 +2687,17 @@ export default function App() {
           totalServices: 1,
         });
       }
+      const generatedFiles = [...proposedFiles.values()];
+      const changes = createGenerationPlan(existingFiles, generatedFiles);
+      if (changes.length === 0) {
+        setGenError({ message: "Generation completed, but it did not produce any changed files." });
+      } else {
+        setPendingGeneration({
+          changes,
+          baseFiles: existingFiles,
+          filesByNode: Object.fromEntries([...proposedByNode.entries()].map(([nodeId, files]) => [nodeId, [...files.values()]])),
+        });
+      }
     } catch (err: any) {
       if (err?.name !== "AbortError") {
         console.error("[project-generator]", err);
@@ -2155,6 +2709,35 @@ export default function App() {
       setGenerationProgress(null);
     }
   }, [ai, buildTool, graph, hasCanvasContent, javaVersion, nodeCode, projectName, prompt, settings, springBootVersion, workspaceFiles]);
+
+  const applyPendingGeneration = useCallback(async (changes: GenerationChange[]) => {
+    if (!pendingGeneration) return;
+    const nextFiles = applyGenerationPlan(pendingGeneration.baseFiles, changes);
+    const selectedPaths = new Set(changes.filter(change => change.selected).map(change => change.path));
+    setWorkspaceFiles(nextFiles);
+    setNodeCode(previous => {
+      const next = { ...previous };
+      for (const [nodeId, files] of Object.entries(pendingGeneration.filesByNode)) {
+        next[nodeId] = dedupeFiles([...(previous[nodeId] ?? []), ...files.filter(file => selectedPaths.has(file.path))]);
+      }
+      return next;
+    });
+    setWorkspaceFilesImported(false);
+    setActiveWorkspacePath(changes.find(change => change.selected)?.path ?? null);
+    setWorkspaceView("editor");
+    setPendingGeneration(null);
+    setRunnerBusy(true);
+    setValidationStatus("running");
+    try {
+      const validationFiles = workspaceFilesImported
+        ? nextFiles
+        : dedupeFiles([...scaffoldService.generate({ projectName, javaVersion, springBootVersion, buildTool, generatedFiles: nextFiles, docker: dockerSettings }), ...nextFiles]);
+      const built = await checkProjectBuild(validationFiles);
+      if (built) await runTestCapture(validationFiles);
+    } finally {
+      setRunnerBusy(false);
+    }
+  }, [buildTool, checkProjectBuild, dockerSettings, javaVersion, pendingGeneration, projectName, runTestCapture, scaffoldService, springBootVersion, workspaceFilesImported]);
 
   const runCodeFixAgent = useCallback(async () => {
     if (codeAgentRunning) return;
@@ -2232,6 +2815,20 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    const closeOverlay = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      if (pendingGeneration) setPendingGeneration(null);
+      else if (clearConfirmOpen) setClearConfirmOpen(false);
+      else if (showSettings) setShowSettings(false);
+      else if (configuringNodeId) setConfiguringNodeId(null);
+      else if (viewingNodeId) setViewingNodeId(null);
+      else if (showTemplates) setShowTemplates(false);
+    };
+    window.addEventListener("keydown", closeOverlay);
+    return () => window.removeEventListener("keydown", closeOverlay);
+  }, [clearConfirmOpen, configuringNodeId, pendingGeneration, showSettings, showTemplates, viewingNodeId]);
+
+  useEffect(() => {
     if (!selectedEdgeId) return;
 
     const selectedEdgeStillExists = graph.edges.some((edge) => edge.id === selectedEdgeId);
@@ -2305,6 +2902,20 @@ export default function App() {
     () => new Set(Object.entries(nodeFilesById).filter(([, files]) => files.length > 0).map(([id]) => id)),
     [nodeFilesById]
   );
+
+  const locateFileInGraph = useCallback((path: string): boolean => {
+    const owner = graph.nodes.find(node => nodeFilesById[node.id]?.some(file => file.path === path));
+    const classNode = graph.nodes.find(
+      node => node.id.startsWith("class:") && node.id.slice("class:".length).endsWith(`:${path}`)
+    );
+    const nodeId = owner?.id ?? classNode?.id ?? null;
+    if (!nodeId) return false;
+
+    setSelectedIds([nodeId]);
+    setSelectedEdgeId(null);
+    setWorkspaceView("canvas");
+    return true;
+  }, [graph.nodes, nodeFilesById]);
 
   // How many expandable class files each node has
   const nodeClassCounts = useMemo(() => {
@@ -2391,16 +3002,22 @@ export default function App() {
       />
 
       {!activeProjectStarted && (
-        <div className="startup-overlay" role="dialog" aria-modal="true" aria-labelledby="startup-title">
-          <div className="startup-panel">
+        <div className="startup-overlay">
+          <div ref={startupDialogRef} tabIndex={-1} className="startup-panel" role="dialog" aria-modal="true" aria-labelledby="startup-title">
             <div className="startup-brand">ARCH</div>
             <div className="startup-copy">
               <h1 id="startup-title">Choose a project</h1>
               <p>Open a saved architecture workspace, import an IDE codebase, or create a fresh Spring Boot project.</p>
             </div>
             <div className="startup-actions">
+              <button className="btn btn-primary startup-action" onClick={startFromDescription}>
+                Create from Description
+              </button>
               <button className="btn btn-primary startup-action" onClick={() => setShowStartupProjectConfig(true)}>
-                Create New Project
+                Create Blank Project
+              </button>
+              <button className="btn startup-action" onClick={() => setShowTemplates(true)}>
+                Start from Template
               </button>
               <button className="btn startup-action" onClick={onOpenSavedProject}>
                 Open Project
@@ -2481,8 +3098,18 @@ export default function App() {
         <Topbar
           canSaveProject={hasProjectData}
           hasUnsavedChanges={hasUnsavedChanges}
-          autoSaveLabel={activeProjectStarted ? autoSaveLabel : undefined}
+          autosaveState={!activeProjectStarted ? "idle" : autoSaveStatus === "error" || autoSaveStatus === "saving" ? autoSaveStatus : hasUnsavedChanges ? "unsaved" : projectFileHandle ? "saved" : "local"}
           importingProject={importingProject}
+          autosaveDetailsActive={activeProjectStarted ? showAutosaveDetails : false}
+          onToggleAutosaveDetails={() => setShowAutosaveDetails(prev => !prev)}
+          autosaveDetails={{
+            lastSavedAt: lastAutoSavedAt,
+            destination: autosaveDestination,
+            error: autosaveError,
+            canRestore: !!autosavedProject,
+          }}
+          onRetryAutosave={retryAutosave}
+          onRestoreAutosave={resumeAutosavedProject}
           javaVersion={javaVersion}
           setJavaVersion={setJavaVersion}
           springBootVersion={springBootVersion}
@@ -2503,10 +3130,14 @@ export default function App() {
           onAddServiceProject={onAddServiceProject}
           onSaveProject={saveProject}
           onExportProject={exportProject}
+          onUndo={undoWorkspace}
+          onRedo={redoWorkspace}
+          canUndo={!!workspaceHistoryRef.current?.past.length && historyVersion >= 0}
+          canRedo={!!workspaceHistoryRef.current?.future.length && historyVersion >= 0}
         />
       )}
 
-      <div className="main">
+      <div className="main" aria-hidden={!activeProjectStarted} inert={!activeProjectStarted}>
         <div className="workspace-shell">
           <div className="workspace-content">
             <nav className="workspace-rail" aria-label="Workspace views">
@@ -2518,7 +3149,17 @@ export default function App() {
                 aria-pressed={workspaceView === "canvas"}
               >
                 <span className="workspace-rail-icon">C</span>
-                <span className="workspace-rail-label">Canvas</span>
+                <span className="workspace-rail-label">Design</span>
+              </button>
+              <button
+                className={`workspace-rail-btn ${workspaceView === "build" ? "active" : ""}`}
+                onClick={() => toggleWorkspaceView("build")}
+                title="Open build workflow"
+                aria-label="Build workspace"
+                aria-pressed={workspaceView === "build"}
+              >
+                <span className="workspace-rail-icon">B</span>
+                <span className="workspace-rail-label">Build</span>
               </button>
               <button
                 className={`workspace-rail-btn ${workspaceView === "editor" ? "active" : ""}`}
@@ -2528,17 +3169,17 @@ export default function App() {
                 aria-pressed={workspaceView === "editor"}
               >
                 <span className="workspace-rail-icon">E</span>
-                <span className="workspace-rail-label">Editor</span>
+                <span className="workspace-rail-label">Code</span>
               </button>
               <button
                 className={`workspace-rail-btn ${workspaceView === "api" ? "active" : ""}`}
                 onClick={() => toggleWorkspaceView("api")}
                 title={workspaceView === "api" ? "Close API tester" : "Open API tester"}
-                aria-label="API tester"
+                aria-label="Ship workspace"
                 aria-pressed={workspaceView === "api"}
               >
                 <span className="workspace-rail-icon">API</span>
-                <span className="workspace-rail-label">API</span>
+                <span className="workspace-rail-label">Ship</span>
               </button>
             </nav>
 
@@ -2551,6 +3192,12 @@ export default function App() {
                   embedded
                   workspaceFiles={workspaceFiles}
                   onDropNode={onPaletteNodeDrop}
+                  onAddNode={(type, name) => {
+                    const rect = canvasRef.current?.getBoundingClientRect();
+                    if (!rect) { addNode(type, 180, 120, name); return; }
+                    const point = clientToWorld(rect.left + rect.width / 2, rect.top + rect.height / 2);
+                    addNode(type, point.x - 80, point.y - 40, name);
+                  }}
                 />
                 <div
                   className="panel-resize-handle panel-resize-handle--right"
@@ -2564,8 +3211,35 @@ export default function App() {
             )}
 
             <div className="workspace-main">
-              {workspaceView === "editor" ? (
-                <FileWorkspace
+              {workspaceView === "build" ? (
+                <section className="milestone-workspace build-workspace" aria-labelledby="build-workspace-title">
+                  <header className="milestone-workspace__header">
+                    <div>
+                      <h1 id="build-workspace-title">Build</h1>
+                      <p>Describe the system, generate a review plan, then validate the approved files.</p>
+                    </div>
+                    <span className={`validation-chip ${buildDiagnostics.length ? "validation-chip--error" : workspaceFiles.length ? "validation-chip--ready" : ""}`}>
+                      {validationStatus === "ready" ? "Ready to run" : validationStatus === "running" ? "Validating…" : validationStatus === "build-failed" ? "Build failed" : validationStatus === "tests-failed" ? "Tests failed" : validationStatus === "cancelled" ? "Validation cancelled" : workspaceFiles.length ? "Ready to validate" : "Configuration incomplete"}
+                    </span>
+                  </header>
+                  <label className="build-prompt-field">
+                    <span>Architecture description</span>
+                    <textarea className="code-editor" value={prompt} onChange={event => setPrompt(event.target.value)} placeholder="Describe the services, data stores, contracts, and operational requirements…" autoFocus />
+                  </label>
+                  <div className="milestone-workspace__actions">
+                    <button className="btn" onClick={generate} disabled={!hasCanvasContent}>Generate prompt from design</button>
+                    <button className="btn btn-primary" onClick={() => void generateProjectWithAI()} disabled={!settings || projectGenerating || (!hasPrompt && !hasCanvasContent)}>
+                      {projectGenerating ? "Generating proposal…" : "Generate review plan"}
+                    </button>
+                    {projectGenerating && <button className="btn btn-danger" onClick={() => { abortRef.current?.abort(); setValidationStatus("cancelled"); }}>Cancel</button>}
+                  </div>
+                  <div className="build-guidance">
+                    <strong>Nothing is overwritten during generation.</strong>
+                    <span>Archiviz will show additions and modifications for approval, then run build and tests after applying them.</span>
+                  </div>
+                </section>
+              ) : workspaceView === "editor" ? (
+                <Suspense fallback={<WorkspaceLoading />}><FileWorkspace
                   files={getRunnableProjectFiles()}
                   activePath={activeWorkspacePath}
                   onActivePathChange={setActiveWorkspacePath}
@@ -2578,12 +3252,32 @@ export default function App() {
                   editorSettings={editorSettings}
                   showGitFolder={gitRepositoryReady}
                   errorDiagnostics={buildDiagnostics}
-                  onBuildProject={() => void runProjectCommand("build")}
+                  gitStatuses={gitRepositoryReady ? gitFileStatuses : undefined}
+                  gitDiffMarks={gitDiffMarks}
+                  onLocateInGraph={locateFileInGraph}
+                  onBuildProject={() => void runBuildCapture()}
                   onRunProject={() => void runProjectCommand("run")}
+                  onRunTests={() => void runTestCapture()}
                   runnerBusy={runnerBusy}
-                />
+                /></Suspense>
               ) : workspaceView === "api" ? (
-                <ApiTester files={workspaceFiles.length > 0 ? workspaceFiles : Object.values(nodeCode).flat()} />
+                <section className="ship-workspace" aria-labelledby="ship-workspace-title">
+                  <header className="ship-workspace__header">
+                    <div><h1 id="ship-workspace-title">Ship</h1><p>Validate, inspect APIs, export, or continue in your preferred IDE.</p></div>
+                    <div className="ship-workspace__actions">
+                      <button className="btn" onClick={() => void runBuildCapture()} disabled={runnerBusy}>Build</button>
+                      <button className="btn" onClick={() => void runTestCapture()}>Test</button>
+                      <button className="btn btn-primary" onClick={exportProject}>Export ZIP</button>
+                    </div>
+                  </header>
+                  <div className="ide-actions" aria-label="Open project externally">
+                    <button className="btn" disabled={workspaceTargetAvailability?.intellij === false} title={workspaceTargetAvailability?.intellij === false ? "IntelliJ IDEA is not installed" : undefined} onClick={() => void openWorkspaceTarget("intellij")}>{workspaceTargetAvailability?.intellij === false ? "IntelliJ unavailable" : "Open in IntelliJ"}</button>
+                    <button className="btn" disabled={workspaceTargetAvailability?.vscode === false} title={workspaceTargetAvailability?.vscode === false ? "Visual Studio Code is not installed" : undefined} onClick={() => void openWorkspaceTarget("vscode")}>{workspaceTargetAvailability?.vscode === false ? "VS Code unavailable" : "Open in VS Code"}</button>
+                    <button className="btn" disabled={workspaceTargetAvailability?.files === false} onClick={() => void openWorkspaceTarget("files")}>Show in Files</button>
+                    <button className="btn" disabled={workspaceTargetAvailability?.terminal === false} onClick={() => void openWorkspaceTarget("terminal")}>Open Terminal</button>
+                  </div>
+                  <Suspense fallback={<WorkspaceLoading />}><ApiTester files={workspaceFiles.length > 0 ? workspaceFiles : Object.values(nodeCode).flat()} /></Suspense>
+                </section>
               ) : (
                 <Canvas
                   canvasRef={canvasRef}
@@ -2598,6 +3292,9 @@ export default function App() {
                   onRename={onRename}
                   onConfigure={setConfiguringNodeId}
                   onViewCode={setViewingNodeId}
+                  onKeyboardMove={onKeyboardMoveNode}
+                  onKeyboardPort={onKeyboardPort}
+                  onKeyboardSelectEdge={id => { setSelectedIds([]); setSelectedEdgeId(id); }}
                   generatedNodeIds={generatedNodeIds}
                   startWire={startWire}
                   moveWire={movePointerInteraction}
@@ -2617,13 +3314,13 @@ export default function App() {
             </div>
           </div>
 
-          <TerminalDock
+          <Suspense fallback={null}><TerminalDock
             terminalSettings={terminalSettings}
           getWorkspaceCwd={async () => (await materializeProjectWorkspace(getActiveGitFiles(), activeServiceProjectName)).cwd}
-          />
+          /></Suspense>
         </div>
 
-        <CodePanel
+        {workspaceView === "canvas" && <Suspense fallback={<WorkspaceLoading />}><CodePanel
           width={codePanelWidth}
           onResizeStart={startCodePanelResize}
           prompt={prompt}
@@ -2644,12 +3341,12 @@ export default function App() {
           codeAgentOutput={codeAgentOutput}
           canRunCodeAgent={!!settings && getActiveGitFiles().length > 0}
           aiModelLabel={settings?.model || settings?.provider || ""}
-        />
+        /></Suspense>}
       </div>
 
       {showSettings && (
-        <div className="modal" onClick={() => setShowSettings(false)}>
-          <div onClick={(e) => e.stopPropagation()}>
+        <div className="modal" onClick={closeSettings}>
+          <div ref={settingsDialogRef} tabIndex={-1} role="dialog" aria-modal="true" aria-label="Settings" onClick={(e) => e.stopPropagation()}>
             <Settings
               theme={theme}
               setTheme={setTheme}
@@ -2687,13 +3384,21 @@ export default function App() {
       })()}
 
       {viewingNodeId && (() => {
-        const node  = graph.nodes.find(n => n.id === viewingNodeId);
-        const files = nodeFilesById[viewingNodeId];
-        return node && files ? (
+        const node = graph.nodes.find(n => n.id === viewingNodeId);
+        if (!node) return null;
+        let modalFiles = nodeFilesById[viewingNodeId];
+        if ((!modalFiles || modalFiles.length === 0) && viewingNodeId.startsWith("class:")) {
+          const classPath = viewingNodeId.split(":").slice(2).join(":");
+          const allFiles = workspaceFiles.length > 0 ? workspaceFiles : Object.values(nodeCode).flat();
+          const direct = allFiles.find(file => file.path === classPath);
+          modalFiles = direct ? [direct] : [];
+        }
+        if (!modalFiles) return null;
+        return (
           <NodeCodeModal
             nodeName={node.name}
             nodeType={node.type}
-            files={files}
+            files={modalFiles}
             onClose={() => setViewingNodeId(null)}
             onSave={(updatedFiles) => {
               setNodeCode(prev => ({ ...prev, [viewingNodeId]: updatedFiles }));
@@ -2702,11 +3407,67 @@ export default function App() {
               setBuildDiagnostics([]);
             }}
           />
-        ) : null;
+        );
       })()}
 
+      {(() => {
+      const paletteFiles = workspaceFiles.length > 0 ? workspaceFiles : Object.values(nodeCode).flat();
+      if (!showCommandPalette) return null;
+      return (
+        <CommandPalette
+          files={paletteFiles}
+          actions={paletteActions}
+          onClose={() => setShowCommandPalette(false)}
+        />
+      );
+      })()}
+
+      {showTemplates && (
+        <TemplatePicker
+          templates={templates}
+          busy={templatesBusy}
+          onLoad={loadTemplateIntoWorkspace}
+          onDelete={template => {
+            removeTemplate(template.id);
+            setTemplates(listTemplates());
+          }}
+          onClose={() => setShowTemplates(false)}
+        />
+      )}
+
+      {pendingGeneration && (
+        <GenerationPlanModal
+          changes={pendingGeneration.changes}
+          onCancel={() => setPendingGeneration(null)}
+          onApply={changes => void applyPendingGeneration(changes)}
+        />
+      )}
+
+      {clearConfirmOpen && (
+        <div className="modal" onClick={closeClearConfirm}>
+          <div ref={clearDialogRef} tabIndex={-1} className="clear-confirm" role="dialog" aria-modal="true" aria-label="Clear workspace" onClick={event => event.stopPropagation()}>
+            <div className="clear-confirm-title">Clear the workspace?</div>
+            <div className="clear-confirm-text">
+              This removes {graph.nodes.length} node{graph.nodes.length === 1 ? "" : "s"} and {workspaceFiles.length} file{workspaceFiles.length === 1 ? "" : "s"} from the canvas. A snapshot will be kept so you can undo this action.
+            </div>
+            <div className="clear-confirm-actions">
+              <button type="button" className="file-action-btn" onClick={() => setClearConfirmOpen(false)}>Cancel</button>
+              <button type="button" className="file-action-btn file-action-btn--run" onClick={performClearCanvas}>Clear workspace</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {clearUndoAvailable && (
+        <div className="clear-undo-banner" role="status">
+          <span>Workspace cleared — {clearSnapshotRef.current?.files.length ?? 0} files restored on undo.</span>
+          <button type="button" className="file-action-btn file-action-btn--run" onClick={undoClearCanvas}>Undo</button>
+          <button type="button" className="np-close" onClick={() => setClearUndoAvailable(false)} aria-label="Dismiss">✕</button>
+        </div>
+      )}
+
       {/* Floating chat button — visible when chat is closed or minimized */}
-      {(!showChat || chatMinimized) && (
+      {activeProjectStarted && (!showChat || chatMinimized) && (
         <div className="chat-fab-wrap">
           <button
             className="chat-fab"
@@ -2725,8 +3486,8 @@ export default function App() {
         </div>
       )}
 
-      {showChat && (
-        <ChatPanel
+      {activeProjectStarted && showChat && (
+        <Suspense fallback={<WorkspaceLoading />}><ChatPanel
           ai={ai}
           minimized={chatMinimized}
           onMinimize={() => setChatMinimized(true)}
@@ -2734,11 +3495,11 @@ export default function App() {
           onClose={() => { setShowChat(false); setChatMinimized(false); setChatUnread(0); }}
           onNewMessage={() => setChatUnread(v => v + 1)}
           workspaceFiles={workspaceFiles}
-        />
+        /></Suspense>
       )}
 
       {generationProgress && (
-        <div className="gen-progress-hud">
+        <div className="gen-progress-hud" role="status" aria-live="polite">
           <div className="gen-progress-header">
             <span className="gen-progress-label">Generating service</span>
             <span className="gen-progress-count">
@@ -2769,7 +3530,7 @@ export default function App() {
       )}
 
       {genError && (
-        <div className="gen-error-hud">
+        <div className="gen-error-hud" role="alert">
           <div className="gen-error-header">
             <span className="gen-error-icon">⚠</span>
             <span className="gen-error-message">{genError.message}</span>

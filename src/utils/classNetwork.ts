@@ -113,7 +113,7 @@ function parseParam(param: string) {
 }
 
 export function extractClassMethodFlows(content: string): ClassMethodFlow[] {
-  const methodRegex = /(?:^|\n)\s*(?:@\w+(?:\([^)]*\))?\s*)*(?:public|private|protected)\s+((?:static|final|synchronized|abstract|default)\s+)*([A-Za-z_$][\w$<>\[\], ?.&]+)\s+([A-Za-z_$][\w$]*)\s*\(([^)]*)\)\s*(?:throws\s+[^{]+)?\{/g;
+  const methodRegex = /(?:^|\n)\s*(?:@\w+(?:\([^)]*\))?\s*)*(?:public|private|protected)\s+((?:static|final|synchronized|abstract|default)\s+)*([A-Za-z_$][\w$<>[\], ?.&]+)\s+([A-Za-z_$][\w$]*)\s*\(([^)]*)\)\s*(?:throws\s+[^{]+)?\{/g;
   const methods: ClassMethodFlow[] = [];
   let match: RegExpExecArray | null;
 
