@@ -1,0 +1,166 @@
+server:
+  port: 8080
+
+spring:
+  profiles:
+    default: dev
+  jackson:
+    serialization:
+      write-dates-as-timestamps: false
+    default-property-inclusion: non_null
+
+  messages:
+    basename: messages
+
+---
+spring:
+  config:
+    activate:
+      on-profile: dev
+
+  datasource:
+    url: jdbc:h2:mem:archiviz-dev;MODE=PostgreSQL
+    driver-class-name: org.h2.Driver
+    username: sa
+    password:
+
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+    show-sql: true
+    properties:
+      hibernate:
+        format_sql: true
+        dialect: org.hibernate.dialect.H2Dialect
+
+  flyway:
+    enabled: false
+
+  devtools:
+    restart:
+      enabled: true
+
+jwt:
+  secret: dev-jwt-secret-key-at-least-256-bits-long!!
+  access-token:
+    expiration-ms: 900000
+  refresh-token:
+    expiration-ms: 604800000
+
+app:
+  admin:
+    email: ${ADMIN_EMAIL:admin@archiviz.local}
+    password: ${ADMIN_PASSWORD:admin-change-me}
+  cors:
+    allowed-origins: ${APP_ALLOWED_ORIGINS:http://localhost:5173,http://127.0.0.1:5173,http://admin.localhost}
+
+auth:
+  refresh-cookie:
+    secure: false
+
+logging:
+  level:
+    com.archiviz.backend: DEBUG
+    org.springframework.security: DEBUG
+
+---
+spring:
+  config:
+    activate:
+      on-profile: docker
+
+  datasource:
+    url: jdbc:postgresql://localhost:5432/archiviz
+    driver-class-name: org.postgresql.Driver
+
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    show-sql: false
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+
+  servlet:
+    multipart:
+      max-file-size: 50MB
+      max-request-size: 50MB
+
+jwt:
+  secret: ${JWT_SECRET:archiviz-jwt-secret-key-change-in-production}
+  access-token:
+    expiration-ms: 900000
+  refresh-token:
+    expiration-ms: 604800000
+
+app:
+  admin:
+    email: ${ADMIN_EMAIL:}
+    password: ${ADMIN_PASSWORD:}
+  cors:
+    allowed-origins: ${APP_ALLOWED_ORIGINS:http://admin.localhost,http://localhost:5173}
+
+auth:
+  refresh-cookie:
+    secure: ${REFRESH_COOKIE_SECURE:false}
+
+logging:
+  level:
+    com.archiviz.backend: INFO
+    org.springframework.security: WARN
+
+---
+spring:
+  config:
+    activate:
+      on-profile: prod
+
+  datasource:
+    url: jdbc:postgresql://localhost:5432/archiviz
+    driver-class-name: org.postgresql.Driver
+
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    show-sql: false
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        jdbc:
+          time_zone: UTC
+
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+
+  servlet:
+    multipart:
+      max-file-size: 50MB
+      max-request-size: 50MB
+
+jwt:
+  secret: ${JWT_SECRET}
+  access-token:
+    expiration-ms: 900000
+  refresh-token:
+    expiration-ms: 604800000
+
+app:
+  admin:
+    email: ${ADMIN_EMAIL}
+    password: ${ADMIN_PASSWORD}
+  cors:
+    allowed-origins: ${APP_ALLOWED_ORIGINS}
+
+auth:
+  refresh-cookie:
+    secure: true
+
+logging:
+  level:
+    com.archiviz.backend: INFO
+    org.springframework.security: WARN

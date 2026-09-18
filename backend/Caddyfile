@@ -1,0 +1,7 @@
+{$ADMIN_HOST:http://admin.localhost} {
+  reverse_proxy backend-admin:80
+}
+
+{$API_HOST:http://api.localhost} {
+  reverse_proxy backend:8080
+}

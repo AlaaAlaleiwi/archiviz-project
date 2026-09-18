@@ -1,5 +1,8 @@
 import { useState, useEffect } from "react";
 import type { AIProvider, AISettings } from "../services/AIService";
+import { LocalAIProviderAdapter } from "../services/aiProviders/LocalAIProviderAdapter";
+import { autoConfigureFreeRoute } from "../services/aiProviders/autoConfigureFreeRoute";
+import type { ModelCapability, ProviderHealth } from "../services/aiProviders/types";
 import { secretDelete, secretGet, secretSet, secureStorageAvailable } from "../utils/secureStore";
 import {
   DEFAULT_EDITOR_SETTINGS,
@@ -84,9 +87,9 @@ const ANTHROPIC_MODELS = [
 ];
 
 const PROVIDERS: { id: AIProvider; label: string; icon: string }[] = [
+  { id: "local",        label: "Local / Private", icon: "🖥️" },
   { id: "openai",       label: "OpenAI",      icon: "🤖" },
   { id: "anthropic",    label: "Claude",      icon: "🧠" },
-  { id: "local",        label: "Local",       icon: "🖥️" },
 ];
 
 const THEME_OPTIONS: { id: AppTheme; label: string; swatch: string; hint: string }[] = [
@@ -110,9 +113,10 @@ const SETTINGS_NAV: { id: SettingsSection; label: string; hint: string }[] = [
 const GITHUB_TOKEN_URL = "https://github.com/settings/tokens/new?scopes=repo&description=Archiviz%20IDE";
 
 const defaultSettings: AISettings = {
-  provider: "openai",
+  provider: "local",
+  routingMode: "free-only",
   apiKey: "",
-  baseUrl: "http://localhost:1234",
+  baseUrl: "http://localhost:11434",
   model: "",
 };
 
@@ -186,6 +190,7 @@ export default function Settings({
   gitSettings,
   setGitSettings,
   onClose,
+  onAutoConfigured,
 }: {
   onSave: (s: AISettings) => void;
   theme: AppTheme;
@@ -201,6 +206,7 @@ export default function Settings({
   gitSettings: GitSettings;
   setGitSettings: (settings: GitSettings) => void;
   onClose: () => void;
+  onAutoConfigured?: (settings: AISettings) => void;
 }) {
   const [cfg, setCfg] = useState<AISettings>(defaultSettings);
   const [error, setError] = useState<string | null>(null);
@@ -208,6 +214,10 @@ export default function Settings({
   const [testResult, setTestResult] = useState<"ok" | "fail" | null>(null);
   const [fetchingModels, setFetchingModels] = useState(false);
   const [fetchedModels, setFetchedModels] = useState<{ id: string }[]>([]);
+  const [localModels, setLocalModels] = useState<ModelCapability[]>([]);
+  const [localHealth, setLocalHealth] = useState<ProviderHealth | null>(null);
+  const [localProtocol, setLocalProtocol] = useState<"ollama" | "openai-compatible" | null>(null);
+  const [discoveringLocal, setDiscoveringLocal] = useState(false);
   const [activeSection, setActiveSection] = useState<SettingsSection>("appearance");
   const [gitToken, setGitToken] = useState(gitSettings.githubToken);
   const [gitTesting, setGitTesting] = useState(false);
@@ -243,17 +253,26 @@ export default function Settings({
   };
 
   const handleProviderChange = (p: AIProvider) => {
-    const baseUrl = p === "local" ? "http://localhost:1234"
+    const baseUrl = p === "local" ? "http://localhost:11434"
       : "";
-    setCfg(s => ({ ...s, provider: p, model: "", baseUrl: baseUrl || s.baseUrl }));
+    setCfg(s => ({
+      ...s,
+      provider: p,
+      routingMode: p === "local" ? s.routingMode : "direct",
+      model: "",
+      baseUrl: baseUrl || s.baseUrl,
+    }));
     setFetchedModels([]);
+    setLocalModels([]);
+    setLocalHealth(null);
+    setLocalProtocol(null);
     setTestResult(null);
     setError(null);
   };
 
   /* ── Test connection ── */
   const testConnection = async () => {
-    if (!cfg.model.trim()) { setError("Select or enter a model first."); return; }
+    if (cfg.provider !== "local" && !cfg.model.trim()) { setError("Select or enter a model first."); return; }
     if ((cfg.provider === "openai" || cfg.provider === "anthropic") && !cfg.apiKey?.trim()) {
       setError("Enter your API key first."); return;
     }
@@ -261,6 +280,15 @@ export default function Settings({
     setTestResult(null);
     setError(null);
     try {
+      if (cfg.provider === "local") {
+        const adapter = new LocalAIProviderAdapter(cfg.baseUrl);
+        const health = await adapter.healthCheck(AbortSignal.timeout(8000));
+        setLocalHealth(health);
+        setLocalProtocol(adapter.protocol);
+        if (health.status !== "available") throw new Error(health.message);
+        setTestResult("ok");
+        return;
+      }
       const { AIService } = await import("../services/AIService");
       const svc = new AIService(cfg);
       await svc.healthCheck();
@@ -272,6 +300,72 @@ export default function Settings({
     } finally {
       setTesting(false);
     }
+  };
+
+  const discoverLocalModels = async (
+    automatic = cfg.routingMode !== "direct",
+    preferredBaseUrl = cfg.provider === "local" ? cfg.baseUrl : undefined,
+  ) => {
+    setDiscoveringLocal(true);
+    setLocalHealth(null);
+    setTestResult(null);
+    setError(null);
+    try {
+      if (automatic) {
+        const result = await autoConfigureFreeRoute(AbortSignal.timeout(8000), preferredBaseUrl);
+        const nextSettings = { ...cfg, ...result.settings };
+        setCfg(nextSettings);
+        setLocalModels(result.models);
+        setLocalProtocol(result.protocol);
+        setLocalHealth({
+          status: "available",
+          message: `${result.settings.model} was selected automatically.`,
+          checkedAt: new Date().toISOString(),
+        });
+        localStorage.setItem("ai_settings", JSON.stringify({ ...nextSettings, apiKey: "" }));
+        onAutoConfigured?.(nextSettings);
+        return;
+      }
+      const adapter = new LocalAIProviderAdapter(cfg.baseUrl);
+      const models = await adapter.listModels(AbortSignal.timeout(8000));
+      const health: ProviderHealth = {
+        status: models.length > 0 ? "available" : "no-models",
+        message: models.length > 0
+          ? `${models.length} local model${models.length === 1 ? "" : "s"} discovered.`
+          : "The local runtime is available, but no models are installed or loaded.",
+        checkedAt: new Date().toISOString(),
+      };
+      setLocalModels(models);
+      setLocalHealth(health);
+      setLocalProtocol(adapter.protocol);
+      if (!cfg.model && models.length > 0) {
+        const suggested = models.find(model => model.recommended) ?? models[0];
+        update({ model: suggested.id });
+      }
+      if (models.length === 0) setError(health.message);
+    } catch (err: any) {
+      const message = err?.name === "TimeoutError" ? "Local model discovery timed out." : (err?.message ?? "Could not discover local models.");
+      setLocalModels([]);
+      setLocalHealth({ status: "unavailable", message, checkedAt: new Date().toISOString() });
+      setError(message);
+    } finally {
+      setDiscoveringLocal(false);
+    }
+  };
+
+  const activateFreeRoute = () => {
+    const preferredBaseUrl = cfg.provider === "local" ? cfg.baseUrl : undefined;
+    setCfg(s => ({
+      ...s,
+      routingMode: "free-only",
+      provider: "local",
+      baseUrl: s.provider === "local" ? s.baseUrl : "http://localhost:11434",
+      model: s.provider === "local" ? s.model : "",
+    }));
+    setFetchedModels([]);
+    setTestResult(null);
+    setError(null);
+    void discoverLocalModels(true, preferredBaseUrl);
   };
 
   /* ── Fetch OpenAI models ── */
@@ -390,7 +484,12 @@ export default function Settings({
             <button
               key={item.id}
               className={`settings-sidebar-item ${activeSection === item.id ? "active" : ""}`}
-              onClick={() => setActiveSection(item.id)}
+              onClick={() => {
+                setActiveSection(item.id);
+                if (item.id === "ai" && cfg.routingMode !== "direct" && !discoveringLocal) {
+                  void discoverLocalModels(true);
+                }
+              }}
             >
               <span>{item.label}</span>
               <small>{item.hint}</small>
@@ -982,21 +1081,57 @@ export default function Settings({
               <small>Provider and model</small>
             </div>
 
-      {/* Provider */}
-      <label style={label}>Provider</label>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 8 }}>
-        {PROVIDERS.map(p => (
-          <button key={p.id} onClick={() => handleProviderChange(p.id)} style={{
-            padding: "10px 8px", borderRadius: 10, fontWeight: 700, fontSize: 12, cursor: "pointer",
-            border: `1px solid ${cfg.provider === p.id ? "var(--accent)" : "var(--border)"}`,
-            background: cfg.provider === p.id ? "color-mix(in srgb, var(--accent) 10%, transparent)" : "var(--panel2)",
-            color: cfg.provider === p.id ? "var(--accent)" : "var(--muted)",
-            transition: "all 0.15s",
-          }}>
-            {p.icon} {p.label}
-          </button>
-        ))}
+      <label style={label}>Routing mode</label>
+      <div className="ai-routing-modes" role="group" aria-label="AI routing mode">
+        <button
+          type="button"
+          className={`ai-routing-card ${cfg.routingMode !== "direct" ? "active" : ""}`}
+          aria-pressed={cfg.routingMode !== "direct"}
+          onClick={activateFreeRoute}
+        >
+          <span><strong>Free Route</strong><em>Recommended</em></span>
+          <small>Automatically finds and selects an available zero-cost model.</small>
+        </button>
+        <button
+          type="button"
+          className={`ai-routing-card ${cfg.routingMode === "direct" ? "active" : ""}`}
+          aria-pressed={cfg.routingMode === "direct"}
+          onClick={() => update({ routingMode: "direct" })}
+        >
+          <span><strong>Direct Provider</strong></span>
+          <small>Use the selected provider and its normal pricing.</small>
+        </button>
       </div>
+      {cfg.routingMode !== "direct" && (
+        <div className="ai-free-route-status" role="status">
+          <strong>{discoveringLocal ? "Configuring Free Route…" : localHealth?.status === "available" ? "Free Route ready" : "Free Route active"}</strong>
+          <span>
+            {localHealth?.status === "available"
+              ? `${cfg.model} selected automatically. No API key or provider setup is required.`
+              : "Archiviz automatically checks supported free providers. Paid and unknown-price models are blocked."}
+          </span>
+        </div>
+      )}
+
+      {/* Provider */}
+      {cfg.routingMode === "direct" && (
+        <>
+          <label style={label}>Provider</label>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 8 }}>
+            {PROVIDERS.map(p => (
+              <button key={p.id} onClick={() => handleProviderChange(p.id)} style={{
+                padding: "10px 8px", borderRadius: 10, fontWeight: 700, fontSize: 12, cursor: "pointer",
+                border: `1px solid ${cfg.provider === p.id ? "var(--accent)" : "var(--border)"}`,
+                background: cfg.provider === p.id ? "color-mix(in srgb, var(--accent) 10%, transparent)" : "var(--panel2)",
+                color: cfg.provider === p.id ? "var(--accent)" : "var(--muted)",
+                transition: "all 0.15s",
+              }}>
+                {p.icon} {p.label}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
 
       {/* OpenAI */}
       {cfg.provider === "openai" && (
@@ -1046,18 +1181,54 @@ export default function Settings({
       {/* Local */}
       {cfg.provider === "local" && (
         <>
-          <label style={label}>Base URL</label>
-          <input className="input" value={cfg.baseUrl}
-            onChange={e => update({ baseUrl: e.target.value.replace(/\/$/, "") })}
-            placeholder="http://localhost:1234" />
-          <small style={{ color: "#f59e0b", fontSize: 11, lineHeight: 1.5, marginTop: 4, display: "block" }}>
-            ⚠️ In LM Studio → Server tab, enable <strong>CORS</strong> and set allowed origin to <code>*</code>.
-          </small>
-          <label style={{ ...label, marginTop: 12 }}>Model name</label>
-          <input className="input" value={cfg.model} onChange={e => update({ model: e.target.value })}
-            placeholder="e.g. google/gemma-4-e4b" />
+          <div className="ai-privacy-card">
+            <div>
+              <strong>Local / Private</strong>
+              <span>Free</span>
+            </div>
+            <p>Requests go only to this endpoint. A localhost URL keeps project content on this device.</p>
+          </div>
+          {localHealth && (
+            <div className={`ai-discovery-status ai-discovery-status--${localHealth.status}`} role="status">
+              <strong>{localHealth.status === "available" ? "Ready" : localHealth.status === "no-models" ? "No models" : "Unavailable"}</strong>
+              <span>{localHealth.message}{localProtocol ? ` Detected ${localProtocol === "ollama" ? "Ollama" : "OpenAI-compatible"}.` : ""}</span>
+            </div>
+          )}
+          {cfg.routingMode === "direct" && localModels.length > 0 && (
+            <>
+              <label style={{ ...label, marginTop: 12 }}>Discovered models</label>
+              <ModelChips
+                models={localModels.map(model => ({ id: model.id, hint: model.recommended ? "Recommended for code" : undefined }))}
+                selected={cfg.model}
+                onSelect={id => update({ model: id })}
+              />
+            </>
+          )}
+          {cfg.routingMode !== "direct" && localHealth?.status !== "available" && (
+            <button className="btn" onClick={() => void discoverLocalModels(true)} disabled={discoveringLocal}>
+              {discoveringLocal ? "Checking free providers…" : "Retry automatic setup"}
+            </button>
+          )}
+          <details className="ai-advanced-settings" open={cfg.routingMode === "direct"}>
+            <summary>Advanced local settings</summary>
+            <label style={label}>Base URL</label>
+            <div className="ai-local-discovery-row">
+              <input className="input" value={cfg.baseUrl}
+                onChange={e => update({ baseUrl: e.target.value.replace(/\/$/, "") })}
+                placeholder="http://localhost:11434" />
+              <button className="btn" onClick={() => void discoverLocalModels(false)} disabled={discoveringLocal}>
+                {discoveringLocal ? "Discovering…" : "Discover Models"}
+              </button>
+            </div>
+            <small className="ai-local-help">
+              Ollama and OpenAI-compatible local servers such as LM Studio are supported.
+            </small>
+            <label style={{ ...label, marginTop: 12 }}>Model name</label>
+            <input className="input" value={cfg.model} onChange={e => update({ model: e.target.value })}
+              placeholder="Automatically selected, or enter an exact model ID" />
+          </details>
           <small style={{ color: "var(--muted)", fontSize: 11, marginTop: 4, display: "block" }}>
-            Copy the model identifier exactly as shown in LM Studio's loaded model list.
+            Local speed and output quality depend on your hardware and selected model.
           </small>
         </>
       )}
@@ -1104,7 +1275,9 @@ export default function Settings({
         Forget Stored API Key
       </button>
       <div className="settings-note" style={{ marginTop: 12 }}>
-        Prompts, attached source files, and architecture context are sent to the selected AI provider when you run generation or chat. Secrets are excluded from project exports.
+        {cfg.provider === "local"
+          ? "Requests go only to the local URL configured above. Archiviz does not silently fall back to a cloud provider."
+          : "Prompts, attached source files, and architecture context are sent to the selected AI provider when you run generation or chat. Secrets are excluded from project exports."}
       </div>
           </section>
         )}

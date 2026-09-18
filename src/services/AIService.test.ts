@@ -34,4 +34,21 @@ describe("AIService browser transport", () => {
     expect(fetchMock).toHaveBeenCalledOnce();
     expect(invoke).not.toHaveBeenCalled();
   });
+
+  it("blocks unverified cloud providers when Free Route is active", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const service = new AIService({
+      provider: "openai",
+      routingMode: "free-only",
+      apiKey: "test-key",
+      baseUrl: "https://example.test",
+      model: "possibly-paid-model",
+    });
+
+    await expect(service.call([{ role: "user", content: "Hi" }]))
+      .rejects.toThrow(/free route blocked this request/i);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(invoke).not.toHaveBeenCalled();
+  });
 });

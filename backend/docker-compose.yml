@@ -1,0 +1,74 @@
+version: "3.8"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: archiviz
+      POSTGRES_USER: archiviz
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-archiviz-secret}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U archiviz"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/archiviz
+      SPRING_DATASOURCE_USERNAME: archiviz
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:-archiviz-secret}
+      JWT_SECRET: ${JWT_SECRET:-archiviz-jwt-secret-key-change-in-production}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@archiviz.local}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin-change-me}
+      APP_ALLOWED_ORIGINS: ${APP_ALLOWED_ORIGINS:-http://localhost:5173,http://admin.localhost}
+      REFRESH_COOKIE_SECURE: ${REFRESH_COOKIE_SECURE:-false}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./logs:/app/logs
+
+  backend-admin:
+    build:
+      context: ../backend-admin
+      dockerfile: Dockerfile
+    depends_on:
+      - backend
+    ports:
+      - "3000:80"
+
+  gateway:
+    image: caddy:2-alpine
+    environment:
+      ADMIN_HOST: ${ADMIN_HOST:-http://admin.localhost}
+      API_HOST: ${API_HOST:-http://api.localhost}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - backend
+      - backend-admin
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:

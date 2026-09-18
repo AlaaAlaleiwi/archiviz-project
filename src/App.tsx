@@ -40,6 +40,7 @@ import GenerationPlanModal from "./components/GenerationPlanModal";
 import type { Graph, NodeType, Camera, Language, NodeData, Edge, JavaVersion, SpringBootVersion, BuildTool } from "./types";
 
 import { AIService } from "./services/AIService";
+import { autoConfigureFreeRoute } from "./services/aiProviders/autoConfigureFreeRoute";
 import { ProjectImportService } from "./services/ProjectImportService";
 import { ZipService } from "./services/ZipService";
 import { ProjectScaffoldService } from "./services/ProjectScaffoldService";
@@ -844,6 +845,25 @@ export default function App({ onLogout }: { onLogout?: () => void }) {
     return null;
   });
   useEffect(() => {
+    if (settings) return;
+    try {
+      const saved = JSON.parse(localStorage.getItem("ai_settings") ?? "null");
+      if (saved?.routingMode === "direct") return;
+    } catch { /* replace invalid Free Route settings automatically */ }
+    const controller = new AbortController();
+    void autoConfigureFreeRoute(controller.signal).then(result => {
+      try {
+        const latest = JSON.parse(localStorage.getItem("ai_settings") ?? "null");
+        if (latest?.routingMode === "direct" || (latest?.provider && latest?.model)) return;
+      } catch { /* replace invalid settings */ }
+      localStorage.setItem("ai_settings", JSON.stringify(result.settings));
+      setSettings(result.settings);
+    }).catch(() => {
+      // Free Route remains available and retries when the user opens AI Settings.
+    });
+    return () => controller.abort();
+  }, [settings]);
+  useEffect(() => {
     void (async () => {
       // migrate legacy plaintext keys into secure storage, then strip them
       try {
@@ -953,6 +973,7 @@ export default function App({ onLogout }: { onLogout?: () => void }) {
   const projectFileInputRef = useRef<HTMLInputElement>(null);
   const lastSavedSignatureRef = useRef<string>(autosavedProject ? getProjectSignature(autosavedProject) : "");
   const buildOnOpenRef = useRef(false);
+  const autoRestoreAttemptedRef = useRef(false);
   const codeAgentAbortRef = useRef<AbortController | null>(null);
   const workspaceHistoryRef = useRef<WorkspaceHistory<WorkspaceSnapshot> | null>(null);
   const applyingHistoryRef = useRef(false);
@@ -1750,6 +1771,20 @@ export default function App({ onLogout }: { onLogout?: () => void }) {
       setArchitectureModel(model);
     }
   }, []);
+
+  useEffect(() => {
+    if (autoRestoreAttemptedRef.current) return;
+    autoRestoreAttemptedRef.current = true;
+    if (!autosavedProject || activeProjectStarted) return;
+
+    applyProjectData(autosavedProject);
+    setProjectFileHandle(null);
+    setActiveRecentProjectId(null);
+    setActiveProjectStarted(true);
+    lastSavedSignatureRef.current = getProjectSignature(autosavedProject);
+    setAutoSaveStatus("saved");
+    setLastAutoSavedAt(autosavedProject.savedAt);
+  }, [activeProjectStarted, applyProjectData, autosavedProject]);
 
   const validateProjectData = (parsed: Partial<SavedProjectFile>): parsed is SavedProjectFile => isSavedProjectFile(parsed);
 
@@ -3417,6 +3452,7 @@ export default function App({ onLogout }: { onLogout?: () => void }) {
               gitSettings={gitSettings}
               setGitSettings={setGitSettings}
               onClose={() => setShowSettings(false)}
+              onAutoConfigured={setSettings}
               onSave={(s) => {
                 setSettings(s);
                 setShowSettings(false);

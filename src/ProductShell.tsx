@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import App from "./App";
 import HomePage from "./pages/HomePage";
-import LoginPage, { clearSession, getSession, type User } from "./pages/Loginpage";
+import LoginPage, { type User } from "./pages/Loginpage";
+import { getCurrentUser, getStoredUser, logout as apiLogout, setSession, type Session } from "./utils/authStore";
 
 type ProductRoute = "home" | "login" | "signup" | "workspace";
 
@@ -14,7 +15,8 @@ function routeFromPath(pathname: string): ProductRoute {
 
 export default function ProductShell() {
   const [route, setRoute] = useState<ProductRoute>(() => routeFromPath(window.location.pathname));
-  const [user, setUser] = useState<User | null>(getSession);
+  const [user, setUser] = useState<User | null>(() => getStoredUser() as User | null);
+  const [loading, setLoading] = useState(true);
 
   const navigate = useCallback((next: ProductRoute) => {
     const path = next === "home" ? "/" : next === "workspace" ? "/app" : `/${next}`;
@@ -29,11 +31,35 @@ export default function ProductShell() {
     return () => window.removeEventListener("popstate", onPopState);
   }, []);
 
-  const logout = useCallback(() => {
-    clearSession();
+  useEffect(() => {
+    const checkSession = async () => {
+      try {
+        const currentUser = await getCurrentUser();
+        if (currentUser) setUser(currentUser as User);
+      } catch {
+        /* ignore */
+      } finally {
+        setLoading(false);
+      }
+    };
+    checkSession();
+  }, []);
+
+  const handleAuth = useCallback((session: Session) => {
+    setSession(session);
+    setUser(session.user as User);
+    navigate("workspace");
+  }, [navigate]);
+
+  const logout = useCallback(async () => {
+    await apiLogout();
     setUser(null);
     navigate("home");
   }, [navigate]);
+
+  if (loading) {
+    return <div className="workspace-loading" role="status">Loading…</div>;
+  }
 
   if (route === "workspace") return <App onLogout={logout} />;
   if (route === "login" || route === "signup") {
@@ -42,10 +68,7 @@ export default function ProductShell() {
         initialMode={route}
         onBack={() => navigate("home")}
         onContinueLocal={() => navigate("workspace")}
-        onAuth={authenticatedUser => {
-          setUser(authenticatedUser);
-          navigate("workspace");
-        }}
+        onAuth={handleAuth}
       />
     );
   }

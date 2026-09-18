@@ -1,84 +1,17 @@
 import { useState } from "react";
+import { login as apiLogin, register as apiRegister, type Session } from "../utils/authStore";
+import { apiClient } from "../utils/apiClient";
 
-/* ─────────────────────────────────────────
-   Tiny localStorage auth store
-   Users are stored as:  auth_users  →  User[]
-   Active session:       auth_session →  User
-───────────────────────────────────────── */
 export interface User {
   id: string;
   name: string;
   email: string;
-  passwordHash: string;
+  role: string;
   createdAt: string;
 }
 
-function hashPassword(password: string): string {
-  // Simple deterministic hash for client-side demo auth
-  let hash = 5381;
-  for (let i = 0; i < password.length; i++) {
-    hash = ((hash << 5) + hash) ^ password.charCodeAt(i);
-  }
-  return (hash >>> 0).toString(16);
-}
-
-function getUsers(): User[] {
-  try { return JSON.parse(localStorage.getItem("auth_users") || "[]"); } catch { return []; }
-}
-
-function saveUsers(users: User[]) {
-  localStorage.setItem("auth_users", JSON.stringify(users));
-}
-
-export function getSession(): User | null {
-  try { return JSON.parse(localStorage.getItem("auth_session") || "null"); } catch { return null; }
-}
-
-export function clearSession() {
-  localStorage.removeItem("auth_session");
-}
-
-function saveSession(user: User) {
-  // Don't persist the hash in the session
-  const { passwordHash: _, ...safe } = user as any;
-  localStorage.setItem("auth_session", JSON.stringify({ ...safe, passwordHash: "" }));
-}
-
-/* ─────────────────────────────────────────
-   AUTH ACTIONS
-───────────────────────────────────────── */
-function login(email: string, password: string): User {
-  const users = getUsers();
-  const user = users.find(u => u.email.toLowerCase() === email.trim().toLowerCase());
-  if (!user) throw new Error("No account found with that email.");
-  if (user.passwordHash !== hashPassword(password)) throw new Error("Incorrect password.");
-  saveSession(user);
-  return user;
-}
-
-function signup(name: string, email: string, password: string): User {
-  const users = getUsers();
-  if (users.find(u => u.email.toLowerCase() === email.trim().toLowerCase())) {
-    throw new Error("An account with this email already exists.");
-  }
-  if (password.length < 6) throw new Error("Password must be at least 6 characters.");
-  const user: User = {
-    id: Math.random().toString(36).slice(2),
-    name: name.trim(),
-    email: email.trim().toLowerCase(),
-    passwordHash: hashPassword(password),
-    createdAt: new Date().toISOString(),
-  };
-  saveUsers([...users, user]);
-  saveSession(user);
-  return user;
-}
-
-/* ─────────────────────────────────────────
-   COMPONENT
-───────────────────────────────────────── */
 interface Props {
-  onAuth: (user: User) => void;
+  onAuth: (session: Session) => void;
   initialMode?: "login" | "signup";
   onBack: () => void;
   onContinueLocal: () => void;
@@ -92,6 +25,10 @@ export default function LoginPage({ onAuth, initialMode = "login", onBack, onCon
   const [showPw, setShowPw] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [resetPending, setResetPending] = useState(false);
+  const [resetEmail, setResetEmail] = useState("");
+  const [resetSent, setResetSent] = useState(false);
+  const [showReset, setShowReset] = useState(false);
 
   const reset = () => { setName(""); setEmail(""); setPassword(""); setError(""); };
 
@@ -99,17 +36,29 @@ export default function LoginPage({ onAuth, initialMode = "login", onBack, onCon
     e.preventDefault();
     setError("");
     setLoading(true);
-    // Tiny artificial delay so the spinner is visible
-    await new Promise(r => setTimeout(r, 400));
     try {
-      const user = mode === "login"
-        ? login(email, password)
-        : signup(name, email, password);
-      onAuth(user);
+      const session = mode === "login"
+        ? await apiLogin(email, password)
+        : await apiRegister(name, email, password);
+      onAuth(session);
     } catch (err: any) {
       setError(err.message ?? "Something went wrong.");
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleResetRequest = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError("");
+    setResetPending(true);
+    try {
+      await apiClient.post("/auth/reset-password/request", { email: resetEmail });
+      setResetSent(true);
+      setResetPending(false);
+    } catch {
+      setError("Could not send reset email. Check console for dev mode token.");
+      setResetPending(false);
     }
   };
 
@@ -123,8 +72,7 @@ export default function LoginPage({ onAuth, initialMode = "login", onBack, onCon
       </div>
 
       <div className="auth-card">
-        <button type="button" className="auth-back" onClick={onBack} aria-label="Back to Archiviz home">← Back</button>
-        {/* Brand */}
+        <button type="button" className="auth-back" onClick={onBack} aria-label="Back to Archiviz home">&larr; Back</button>
         <div className="auth-brand">
           <span className="auth-logo" aria-hidden="true">A</span>
           <span className="auth-brand-name">ARCHIVIZ // ACCESS GATEWAY</span>
@@ -139,11 +87,9 @@ export default function LoginPage({ onAuth, initialMode = "login", onBack, onCon
             : "Start designing architecture in minutes."}
         </p>
 
-        {/* Error */}
         {error && <div className="auth-error">{error}</div>}
 
         <form className="auth-form" onSubmit={handleSubmit}>
-          {/* Name — signup only */}
           {mode === "signup" && (
             <div className="auth-field">
               <label className="auth-label" htmlFor="auth-name">Full Name</label>
@@ -160,7 +106,6 @@ export default function LoginPage({ onAuth, initialMode = "login", onBack, onCon
             </div>
           )}
 
-          {/* Email */}
           <div className="auth-field">
             <label className="auth-label" htmlFor="auth-email">Email</label>
             <input
@@ -175,7 +120,6 @@ export default function LoginPage({ onAuth, initialMode = "login", onBack, onCon
             />
           </div>
 
-          {/* Password */}
           <div className="auth-field">
             <label className="auth-label" htmlFor="auth-password">Password</label>
             <div style={{ position: "relative" }}>
@@ -211,12 +155,10 @@ export default function LoginPage({ onAuth, initialMode = "login", onBack, onCon
           </button>
         </form>
 
-        {/* Divider */}
         <div className="auth-divider">or</div>
 
         <button type="button" className="auth-local" onClick={onContinueLocal}>Continue without an account</button>
 
-        {/* Switch mode */}
         <div className="auth-footer" style={{ justifyContent: "center" }}>
           <span>{mode === "login" ? "Don't have an account?" : "Already have an account?"}</span>
           <button
@@ -228,7 +170,48 @@ export default function LoginPage({ onAuth, initialMode = "login", onBack, onCon
           </button>
         </div>
 
-        {/* Demo hint */}
+        {mode === "login" && !showReset && (
+          <div style={{ marginTop: 16, textAlign: "center" }}>
+            <button
+              type="button"
+              className="auth-link-btn"
+              onClick={() => { setShowReset(true); setResetSent(false); setResetEmail(email); }}
+              style={{ fontSize: 12 }}
+            >
+              Forgot password?
+            </button>
+          </div>
+        )}
+
+        {mode === "login" && showReset && !resetSent && (
+          <div style={{ marginTop: 16 }}>
+            <form onSubmit={handleResetRequest} style={{ display: "flex", gap: 8 }}>
+              <input
+                className="auth-input"
+                type="email"
+                placeholder="your@email.com"
+                value={resetEmail}
+                onChange={e => setResetEmail(e.target.value)}
+                required
+                style={{ flex: 1 }}
+              />
+              <button
+                type="submit"
+                className="auth-submit"
+                disabled={resetPending}
+                style={{ whiteSpace: "nowrap" }}
+              >
+                {resetPending ? "..." : "Send"}
+              </button>
+            </form>
+            <p style={{ fontSize: 10, color: "#334155", textAlign: "center", marginTop: 8, lineHeight: 1.5 }}>
+              In dev mode, the reset token is logged to the server console.
+            </p>
+          </div>
+        )}
+
+        {resetSent && <p className="auth-sub" role="status">If the account exists, reset instructions have been sent.</p>}
+
         <p style={{
           marginTop: 20,
           fontSize: 10,
@@ -236,7 +219,7 @@ export default function LoginPage({ onAuth, initialMode = "login", onBack, onCon
           textAlign: "center",
           lineHeight: 1.5,
         }}>
-          Local account preview only. Cloud accounts and synchronization are not connected yet.
+          Cloud accounts are stored on the backend server.
         </p>
       </div>
     </div>

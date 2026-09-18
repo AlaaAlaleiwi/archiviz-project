@@ -1,6 +1,6 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 import App from "./App";
 
@@ -12,6 +12,65 @@ describe("Milestone 1 golden-path shell", () => {
     localStorage.clear();
     vi.mocked(invoke).mockClear();
     delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+  });
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("auto-configures Free Route without requiring the Settings form", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ models: [{ name: "qwen2.5-coder:7b" }] }),
+    } as Response));
+
+    render(<App />);
+
+    await waitFor(() => expect(JSON.parse(localStorage.getItem("ai_settings") ?? "null")).toMatchObject({
+      provider: "local",
+      routingMode: "free-only",
+      baseUrl: "http://localhost:11434",
+      model: "qwen2.5-coder:7b",
+    }));
+  });
+
+  it("repairs an incomplete Free Route configuration automatically", async () => {
+    localStorage.setItem("ai_settings", JSON.stringify({
+      provider: "local",
+      routingMode: "free-only",
+      baseUrl: "http://localhost:11434",
+      model: "",
+    }));
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ models: [{ name: "deepseek-coder:latest" }] }),
+    } as Response));
+
+    render(<App />);
+
+    await waitFor(() => expect(JSON.parse(localStorage.getItem("ai_settings") ?? "null").model)
+      .toBe("deepseek-coder:latest"));
+  });
+
+  it("restores the autosaved project after a page refresh", async () => {
+    localStorage.setItem("archiviz_project_autosave", JSON.stringify({
+      version: 1,
+      savedAt: "2026-09-18T10:00:00.000Z",
+      projectName: "Restored project",
+      javaVersion: "21",
+      springBootVersion: "3.4",
+      buildTool: "maven",
+      prompt: "A restored project",
+      graph: { nodes: [], edges: [] },
+      nodeCode: {},
+      workspaceFiles: [],
+    }));
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.queryByRole("heading", { name: /choose a project/i })).not.toBeInTheDocument());
+    expect(screen.getByRole("button", { name: "Canvas" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Settings" })).toBeInTheDocument();
   });
 
   it("starts from a description and exposes Design, Build, Code, and Ship workspaces", async () => {

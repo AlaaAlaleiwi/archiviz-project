@@ -697,6 +697,7 @@ fn open_project_window(app: tauri::AppHandle, launch_token: String) -> Result<()
 #[serde(rename_all = "camelCase")]
 struct AiFetchOptions {
     url: String,
+    method: Option<String>,
     headers: HashMap<String, String>,
     body: String,
 }
@@ -721,24 +722,45 @@ struct AiErrorEvent {
     error: String,
 }
 
+fn ai_fetch_uses_get(method: Option<&str>) -> bool {
+    method.is_some_and(|value| value.eq_ignore_ascii_case("GET"))
+}
+
 #[tauri::command]
 async fn ai_fetch(options: AiFetchOptions) -> Result<String, String> {
     let client = reqwest::Client::new();
-    let mut builder = client.post(&options.url);
+    let is_get = ai_fetch_uses_get(options.method.as_deref());
+    let mut builder = if is_get {
+        client.get(&options.url)
+    } else {
+        client.post(&options.url)
+    };
     for (k, v) in &options.headers {
         builder = builder.header(k.as_str(), v.as_str());
     }
-    let response = builder
-        .body(options.body)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
+    if !is_get {
+        builder = builder.body(options.body);
+    }
+    let response = builder.send().await.map_err(|e| e.to_string())?;
     if !response.status().is_success() {
         let status = response.status().as_u16();
         let text = response.text().await.unwrap_or_default();
         return Err(format!("HTTP {}: {}", status, text));
     }
     response.text().await.map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod ai_fetch_tests {
+    use super::ai_fetch_uses_get;
+
+    #[test]
+    fn selects_get_only_when_requested() {
+        assert!(ai_fetch_uses_get(Some("GET")));
+        assert!(ai_fetch_uses_get(Some("get")));
+        assert!(!ai_fetch_uses_get(Some("POST")));
+        assert!(!ai_fetch_uses_get(None));
+    }
 }
 
 #[tauri::command]

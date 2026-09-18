@@ -8,6 +8,7 @@ vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn().mockResolvedValue(() =
 
 describe("ProductShell", () => {
   beforeEach(() => {
+    sessionStorage.clear();
     localStorage.clear();
     window.history.replaceState({}, "", "/");
   });
@@ -24,14 +25,13 @@ describe("ProductShell", () => {
     render(<ProductShell />);
     await user.click(screen.getByRole("button", { name: /start building/i }));
     expect(screen.getByRole("heading", { name: /create account/i })).toBeInTheDocument();
-    expect(screen.getByText(/cloud accounts and synchronization are not connected yet/i)).toBeInTheDocument();
+    expect(screen.getByText(/cloud accounts are stored on the backend server/i)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /continue without an account/i }));
     expect(await screen.findByRole("heading", { name: /choose a project/i })).toBeInTheDocument();
   });
 
   it("logs out from the workspace without deleting local project data", async () => {
     const user = userEvent.setup();
-    localStorage.setItem("auth_session", JSON.stringify({ id: "user-1", name: "Jane Doe", email: "jane@example.com", passwordHash: "", createdAt: "2026-09-17T00:00:00.000Z" }));
     localStorage.setItem("archiviz_autosave_project", JSON.stringify({ projectName: "Local project" }));
     window.history.replaceState({}, "", "/app");
     render(<ProductShell />);
@@ -40,13 +40,11 @@ describe("ProductShell", () => {
     await user.click(screen.getByRole("button", { name: /log out of archiviz/i }));
 
     expect(screen.getByRole("heading", { name: /turn system design into validated software/i })).toBeInTheDocument();
-    expect(localStorage.getItem("auth_session")).toBeNull();
     expect(localStorage.getItem("archiviz_autosave_project")).not.toBeNull();
   });
 
   it("allows logout before a project is selected", async () => {
     const user = userEvent.setup();
-    localStorage.setItem("auth_session", JSON.stringify({ id: "user-1", name: "Jane Doe", email: "jane@example.com", passwordHash: "", createdAt: "2026-09-17T00:00:00.000Z" }));
     window.history.replaceState({}, "", "/app");
     render(<ProductShell />);
 
@@ -54,6 +52,5 @@ describe("ProductShell", () => {
     await user.click(screen.getByRole("button", { name: /log out of archiviz/i }));
 
     expect(screen.getByRole("heading", { name: /turn system design into validated software/i })).toBeInTheDocument();
-    expect(localStorage.getItem("auth_session")).toBeNull();
   });
 });

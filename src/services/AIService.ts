@@ -12,6 +12,7 @@ export type AIProvider = "openai" | "anthropic" | "local" | "spring-boot";
 
 export interface AISettings {
   provider: AIProvider;
+  routingMode?: "free-only" | "direct";
   apiKey?: string;
   baseUrl: string;
   model: string;
@@ -78,6 +79,7 @@ export class AIService {
     signal?: AbortSignal,
     onMeta?: (meta: { finishReason: StreamFinishReason }) => void
   ): Promise<string> {
+    this.assertRoutingPolicy();
     const opts: AiFetchOptions = {
       url: this.chatUrl(),
       headers: this.headers(),
@@ -139,6 +141,7 @@ export class AIService {
   // ── Single-shot call (health check, code generation) ─────────────────────
 
   async call(messages: ChatMessage[], signal?: AbortSignal): Promise<string> {
+    this.assertRoutingPolicy();
     const opts: AiFetchOptions = {
       url: this.chatUrl(),
       headers: this.headers(),
@@ -179,6 +182,12 @@ export class AIService {
   }
 
   // ── Private helpers ───────────────────────────────────────────────────────
+
+  private assertRoutingPolicy(): void {
+    if (this.settings.routingMode === "free-only" && this.settings.provider !== "local") {
+      throw new Error("Free Route blocked this request because the selected cloud provider is not verified as zero cost.");
+    }
+  }
 
   private chatUrl(): string {
     if (this.settings.provider === "anthropic") return "https://api.anthropic.com/v1/messages";

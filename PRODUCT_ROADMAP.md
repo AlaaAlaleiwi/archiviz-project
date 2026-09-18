@@ -321,6 +321,8 @@ The empty canvas should explain how to add components, connect them, configure t
 
 # Milestone 1.1: Free and Private AI
 
+**Status:** In progress — automatic local/private Free Route setup and the fail-closed `FreeOnlyRouter` policy core are implemented.
+
 ## Objective
 
 Make Archiviz useful without requiring a paid AI subscription while preserving privacy, predictable behavior, and a clear path to enterprise-controlled models.
